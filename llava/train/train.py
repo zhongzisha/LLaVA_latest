@@ -824,6 +824,7 @@ def train(attn_implementation=None):
                 **bnb_model_from_pretrained_args
             )
         else:
+            print('loading LlavaLlamaForCausalLM for vision model')
             model = LlavaLlamaForCausalLM.from_pretrained(
                 model_args.model_name_or_path,
                 cache_dir=training_args.cache_dir,
@@ -831,6 +832,12 @@ def train(attn_implementation=None):
                 torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
                 **bnb_model_from_pretrained_args
             )
+            print('generation_config:', model.generation_config)
+            model.generation_config = transformers.GenerationConfig.from_pretrained(model_args.model_name_or_path)
+            model.generation_config.do_sample = False  # use greedy decoding
+            model.generation_config.temperature = 1.0  # 
+            model.generation_config.top_p = 1.0  # 
+            model.generation_config.repetition_penalty = 1.0  # disable repetition penalty
     else:
         model = transformers.LlamaForCausalLM.from_pretrained(
             model_args.model_name_or_path,
