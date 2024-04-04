@@ -68,8 +68,7 @@ class ModelArguments:
 
 @dataclass
 class DataArguments:
-    data_path: str = field(default=None,
-                           metadata={"help": "Path to the training data."})
+    data_path: Optional[List[str]] = field(default=None, metadata={"help": "Path to the training data."})
     lazy_preprocess: bool = False
     is_multimodal: bool = False
     image_folder: Optional[str] = field(default=None)
@@ -662,7 +661,14 @@ class LazySupervisedDataset(Dataset):
                  tokenizer: transformers.PreTrainedTokenizer,
                  data_args: DataArguments):
         super(LazySupervisedDataset, self).__init__()
-        list_data_dict = json.load(open(data_path, "r"))
+        # ================================================
+        list_data_dict = []
+        for data in data_path:
+            data = json.load(open(data, "r"))
+            for i in data:
+                i['id'] = len(list_data_dict)
+                list_data_dict.append(i)
+        # ================================================
 
         rank0_print("Formatting inputs...Skip in lazy mode")
         self.tokenizer = tokenizer
