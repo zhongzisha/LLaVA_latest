@@ -35,8 +35,9 @@ from llava import conversation as conversation_lib
 from llava.model import *
 from llava.mm_utils import tokenizer_image_token
 
+import PIL
 from PIL import Image
-
+PIL.Image.MAX_IMAGE_PIXELS = 933120000
 
 local_rank = None
 
@@ -64,6 +65,7 @@ class ModelArguments:
     mm_use_im_patch_token: bool = field(default=True)
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
+    image_grid_pinpoints: Optional[str] = field(default="[]")
 
 
 @dataclass

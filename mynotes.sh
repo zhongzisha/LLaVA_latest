@@ -13,9 +13,13 @@ EVAL="/lscratch/${SLURM_JOB_ID}/eval"
 CONV="vicuna_v1"
 CKPT_NAME=liuhaotian/llava-v1.5-13b
 CKPT_NAME=liuhaotian/llava-v1.5-7b
-CONV=mistral_instruct
-CONV=mistral_direct
+# CONV=mistral_instruct
+# CONV=mistral_direct
 CKPT_NAME=liuhaotian/llava-v1.6-mistral-7b
+
+CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240404/llava/lmsys/vicuna-7b-v1.5/llava-pretrain-zero3-flash_attention_2-/llava-v1.7-7b
+CONV="vicuna_v1"
+CKPT_NAME=liuhaotian/llava-v1.5-7b
 python -m llava.eval.model_vqa_loader \
     --model-path ${CKPT_NAME} \
     --question-file ${EVAL}/textvqa/llava_textvqa_val_v051_ocr.jsonl \
@@ -28,6 +32,26 @@ python -m llava.eval.eval_textvqa \
     --annotation-file ${EVAL}/textvqa/TextVQA_0.5.1_val.json \
     --result-file ${EVAL}/textvqa/answers/${CKPT_NAME}-${CONV}.jsonl
 
+CKPT_NAME=llava-v1.7-7b
+CKPT=/data/zhongz2/data/LLaVA-Med/video/temp_20240404/llava/lmsys/vicuna-7b-v1.5/llava-pretrain-zero3-flash_attention_2-/${CKPT_NAME}
+CKPT=liuhaotian/llava-v1.5-7b
+CKPT_NAME=liuhaotian/llava-v1.5-7b
+CONV="vicuna_v1"
+DATASET_NAME=vqa_rad
+python3 -m llava.eval.model_vqa_loader_med \
+    --model-path ${CKPT} \
+    --question-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
+    --image-folder /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/images \
+    --answers-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/test-answer-file-run1.jsonl \
+    --temperature 0 \
+    --conv-mode ${CONV}
+
+python llava/eval/run_eval_batch1.py \
+--gt /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
+--candidate /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/train_open_answers.json \
+--pred /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/test-answer-file-run1.jsonl \
+--pred_file_parent_path /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/ \
+--target_test_type test-answer-file-run1   
 
 
 

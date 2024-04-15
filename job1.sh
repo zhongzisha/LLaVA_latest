@@ -1,5 +1,7 @@
 #!/bin/bash
 
+ACTION=${1}
+
 set -x -e
 echo "run job1 on `hostname`"
 
@@ -31,22 +33,24 @@ else
     unzip -qq ${DATA_ROOT}/../finetune_data_LLaVA-Med.zip
 fi
 
-# cp ${DATA_ROOT}/MoE/llava_image_tune_cleaned.json train_json/
-if [ "$CLUSTER_NAME" == "FRCE" ]; then
-    # frce
-    mkdir eval
-    cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/MoE/eval/eval.zip
-    cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/MoE/eval/vqav2/test2015.zip
-    cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/MoE/eval/textvqa/train_val_images.zip
-    cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/MoE//eval/textvqa/TextVQA_0.5.1_val.json .
-    cd $MYTMP_DIR
-else
-    mkdir eval
-    cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/eval/eval.zip
-    cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/eval/vqav2/test2015.zip
-    cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/eval/textvqa/train_val_images.zip
-    cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/eval/textvqa/TextVQA_0.5.1_val.json .
-    cd $MYTMP_DIR
+if [ "$ACTION" == "eval" ]; then
+    # cp ${DATA_ROOT}/MoE/llava_image_tune_cleaned.json train_json/
+    if [ "$CLUSTER_NAME" == "FRCE" ]; then
+        # frce
+        mkdir eval
+        cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/MoE/eval/eval.zip
+        cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/MoE/eval/vqav2/test2015.zip
+        cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/MoE/eval/textvqa/train_val_images.zip
+        cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/MoE//eval/textvqa/TextVQA_0.5.1_val.json .
+        cd $MYTMP_DIR
+    else
+        mkdir eval
+        cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/eval/eval.zip
+        cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/eval/vqav2/test2015.zip
+        cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/eval/textvqa/train_val_images.zip
+        cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/eval/textvqa/TextVQA_0.5.1_val.json .
+        cd $MYTMP_DIR
+    fi
 fi
 
 echo "done" >> $MYTMP_DIR/done.txt
