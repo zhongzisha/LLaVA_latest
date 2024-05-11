@@ -34,27 +34,49 @@ python -m llava.eval.eval_textvqa \
 
 CKPT_NAME=llava-v1.7-7b
 CKPT=/data/zhongz2/data/LLaVA-Med/video/temp_20240404/llava/lmsys/vicuna-7b-v1.5/llava-pretrain-zero3-flash_attention_2-/${CKPT_NAME}
-CKPT=liuhaotian/llava-v1.5-7b
-CKPT_NAME=liuhaotian/llava-v1.5-7b
+# CKPT=liuhaotian/llava-v1.5-7b
+# CKPT_NAME=liuhaotian/llava-v1.5-7b
 CONV="vicuna_v1"
+CONV="llama_2"
 DATASET_NAME=vqa_rad
-python3 -m llava.eval.model_vqa_loader_med \
+CUDA_VISIBLE_DEVICES=1 python3 -m llava.eval.model_vqa_loader_med \
     --model-path ${CKPT} \
     --question-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
     --image-folder /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/images \
-    --answers-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/test-answer-file-run1.jsonl \
+    --answers-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/test-answer-file-run1.jsonl \
     --temperature 0 \
     --conv-mode ${CONV}
 
-python llava/eval/run_eval_batch1.py \
+CUDA_VISIBLE_DEVICES=1 python llava/eval/run_eval_batch1.py \
 --gt /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
 --candidate /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/train_open_answers.json \
---pred /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/test-answer-file-run1.jsonl \
---pred_file_parent_path /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT_NAME}/answers/ \
+--pred /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/test-answer-file-run1.jsonl \
+--pred_file_parent_path /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/ \
 --target_test_type test-answer-file-run1   
 
 
 
+CKPT_NAME=llava-v1.7-8b
+CKPT=/data/zhongz2/data/LLaVA-Med/video/temp_20240404/llava/lmsys/vicuna-7b-v1.5/llava-pretrain-zero3-flash_attention_2-/${CKPT_NAME}
+# CKPT=liuhaotian/llava-v1.5-7b
+# CKPT_NAME=liuhaotian/llava-v1.5-7b
+CONV="vicuna_v1"
+# CONV="llama_2"
+DATASET_NAME=vqa_rad
+CUDA_VISIBLE_DEVICES=1 python3 -m llava.eval.model_vqa_loader_med \
+    --model-path ${CKPT} \
+    --question-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
+    --image-folder /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/images \
+    --answers-file /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/test-answer-file-run1.jsonl \
+    --temperature 0 \
+    --conv-mode ${CONV}
+
+CUDA_VISIBLE_DEVICES=1 python llava/eval/run_eval_batch1.py \
+--gt /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/test.json \
+--candidate /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/train_open_answers.json \
+--pred /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/test-answer-file-run1.jsonl \
+--pred_file_parent_path /lscratch/$SLURM_JOB_ID/finetune_data_LLaVA-Med/${DATASET_NAME}/${CKPT}/${CONV}/answers/ \
+--target_test_type test-answer-file-run1   
 
 
 
