@@ -21,6 +21,7 @@ if [ "$MY_DEBUG" == "yes" ]; then
     FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
     MOE_FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
     save_steps=5
+    num_train_epochs=0.0005
 else
 
     if [ ! -e /tmp/$USER ]; then
@@ -35,6 +36,7 @@ else
     FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/la_tune_256k.json ${JSON_FOLDER}/lrv_tune_331k.json ${JSON_FOLDER}/lvis_tune_220k_.json ${JSON_FOLDER}/svit_tune_157k.json ${JSON_FOLDER}/nlp_tune.json"
     MOE_FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
     save_steps=100
+    num_train_epochs=1
 fi
 
 per_device_train_batch_size=${1}
@@ -79,11 +81,14 @@ torchrun \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
-    --image_aspect_ratio pad \
+    --mm_projector_type "mlp2x_gelu" \
+    --image_aspect_ratio anyres \
+    --mm_patch_merge_type spatial_unpad \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
     --group_by_modality_length True \
     ${data_type_str} \
     --output_dir ${pretrain_output_dir} \
-    --num_train_epochs 1 \
+    --num_train_epochs ${num_train_epochs} \
     --per_device_train_batch_size ${per_device_train_batch_size} \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps ${gradient_accumulation_steps} \
@@ -96,8 +101,8 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 2048 \
-    --gradient_checkpointing False \
+    --model_max_length 8192 \
+    --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \

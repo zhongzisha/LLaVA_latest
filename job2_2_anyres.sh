@@ -45,7 +45,7 @@ save_steps=1000
 num_train_epochs=1
 else
 save_steps=5
-num_train_epochs=0.0005
+num_train_epochs=0.005
 fi
 
 if [ "${SLURM_JOB_NODELIST}" != "" ]; then
@@ -79,9 +79,10 @@ torchrun \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
     --image_aspect_ratio anyres \
     --mm_patch_merge_type spatial_unpad \
-    --image_grid_pinpoints "[[336,672],[672,336],[672,672],[1008,336],[336,1008]]" \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
     --group_by_modality_length True \
     ${data_type_str} \
     --output_dir ${finetune_output_dir} \
@@ -98,13 +99,15 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 2048 \
-    --gradient_checkpointing False \
+    --model_max_length 8192 \
+    --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \
-    --cache_dir ./cache_dir
-
+    --cache_dir ./cache_dir \
+    --torch_compile True \
+    --torch_compile_backend "inductor" \
+    --dataloader_drop_last True
 
 
 

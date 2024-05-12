@@ -91,7 +91,8 @@ conv_version=plain
 model_name_or_path=microsoft/phi-2
 # model_name_or_path=BioMistral/BioMistral-7B
 model_name_or_path=lmsys/vicuna-7b-v1.5
-pretrain_output_dir=${DATA_ROOT}/temp_20240404/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct 
+pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -150,7 +151,9 @@ model_name_or_path=meta-llama/Llama-2-7b-chat-hf
 conv_version=llava_llama_2
 model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
-pretrain_output_dir=${DATA_ROOT}/temp_20240404/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
+conv_version=llava_llama_3
+pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -195,8 +198,8 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     deepspeed_config=zero2
     atten_implementation=eager    # no flash-attn
 else
-    per_device_train_batch_size=1
-    gradient_accumulation_steps=8
+    per_device_train_batch_size=2
+    gradient_accumulation_steps=16
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
@@ -210,7 +213,9 @@ model_name_or_path=meta-llama/Llama-2-7b-chat-hf
 conv_version=llava_llama_2
 model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
-pretrain_output_dir=${DATA_ROOT}/temp_20240404/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
+conv_version=llava_llama_3
+pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
