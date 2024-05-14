@@ -335,12 +335,12 @@ def preprocess_multimodal(
     return sources
 
 
-def preprocess_llama_3(
+def preprocess_v1(
     sources,
     tokenizer: transformers.PreTrainedTokenizer,
     has_image: bool = False
 ) -> Dict:
-    conv = conversation_lib.conv_llama_3.copy()
+    conv = conversation_lib.default_conversation.copy()
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
     # Apply prompt templates
@@ -373,17 +373,15 @@ def preprocess_llama_3(
     targets = input_ids.clone()
 
     assert conv.sep_style == conversation_lib.SeparatorStyle.TWO
+
     # Mask targets
-    sep = conv.sep + conv.roles[1] + ":"
-    # Llama3 tokenizer has the token for whitespace
-    # Typically, the token after whitespace will be naturally encoded as one token with whitespace
-    # some special cases like ": 3" will be encoded as :, whitespace, 3; 3 tokens. Only in this case, the loss on whitespace will be calculated
+    sep = conv.sep + conv.roles[1] + ": "
     for conversation, target in zip(conversations, targets):
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
 
         rounds = conversation.split(conv.sep2)
-        cur_len = 0
-        
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
         for i, rou in enumerate(rounds):
             if rou == "":
                 break
@@ -395,14 +393,19 @@ def preprocess_llama_3(
 
             if has_image:
                 round_len = len(tokenizer_image_token(rou, tokenizer))
-                instruction_len = len(tokenizer_image_token(parts[0], tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
             else:
                 round_len = len(tokenizer(rou).input_ids)
-                instruction_len = len(tokenizer(parts[0]).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+
+            if i != 0 and not tokenizer.legacy and IS_TOKENIZER_GREATER_THAN_0_14:
+                round_len -= 1
+                instruction_len -= 1
 
             target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
 
-            cur_len += round_len + 1 #starting from index 0, then cur_len will not cover eos token
+            cur_len += round_len
+        target[cur_len:] = IGNORE_INDEX
 
         if cur_len < tokenizer.model_max_length:
             if cur_len != total_len:
@@ -411,10 +414,6 @@ def preprocess_llama_3(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
                     f" (ignored)"
                 )
-
-    if input_ids[0][0] != tokenizer.bos_token_id:
-        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
-        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
 
     return dict(
         input_ids=input_ids,
@@ -448,6 +447,168 @@ def preprocess_plain(
     return dict(input_ids=input_ids, labels=targets)
 
 
+def preprocess_llama_2(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool = False
+) -> Dict:
+    conv = conversation_lib.default_conversation.copy()
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        conv.messages = []
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            conv.append_message(role, sentence["value"])
+        conversations.append(conv.get_prompt())
+
+    # Tokenize conversations
+
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+
+    targets = input_ids.clone()
+
+    assert conv.sep_style == conversation_lib.SeparatorStyle.LLAMA_2
+
+    # Mask targets
+    sep = "[/INST] "
+    for conversation, target in zip(conversations, targets):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep2)
+        cur_len = 1
+        target[:cur_len] = IGNORE_INDEX
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+
+            parts = rou.split(sep)
+            if len(parts) != 2:
+                break
+            parts[0] += sep
+
+            if has_image:
+                round_len = len(tokenizer_image_token(rou, tokenizer))
+                instruction_len = len(tokenizer_image_token(parts[0], tokenizer)) - 2
+            else:
+                round_len = len(tokenizer(rou).input_ids)
+                instruction_len = len(tokenizer(parts[0]).input_ids) - 2
+
+            target[cur_len : cur_len + instruction_len] = IGNORE_INDEX
+
+            cur_len += round_len
+        target[cur_len:] = IGNORE_INDEX
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
+
+def preprocess_llama_3_v2(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    has_image: bool = False
+) -> Dict:
+    conv = copy.deepcopy(conversation_lib.conv_templates["llava_llama_3_v2"])
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        conv.messages = []
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            conv.append_message(role, sentence["value"])
+        conversations.append(conv.get_prompt())
+    # Tokenize conversations
+
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+
+    targets = input_ids.clone()
+
+    assert conv.sep_style == conversation_lib.SeparatorStyle.LLAMA_3_V2
+    # Mask targets
+    # sep = conv.sep + conv.roles[1] + ": "
+    for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep)
+        cur_len = 0 
+        target[:] = IGNORE_INDEX
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+            
+            parts = rou.split(conv.sep2)
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))
+            if i!=0:
+                rou_len -= 1
+            else:
+                cur_len += rou_len
+                continue
+
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+            target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
+
+            cur_len += rou_len    
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+                
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
+
 def preprocess(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
@@ -468,8 +629,8 @@ def preprocess(
         return preprocess_v1(sources, tokenizer, has_image=has_image)
     if conversation_lib.default_conversation.version == "mpt":
         return preprocess_mpt(sources, tokenizer, has_image=has_image)
-    if conversation_lib.default_conversation.version.startswith("v3"): # for llama 3 tokenizer
-        return preprocess_llama_3(sources, tokenizer, has_image=has_image)
+    if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_3_V2:
+        return preprocess_llama_3_v2(sources, tokenizer, has_image=has_image)
     # add end signal and concatenate together
     conversations = []
     for source in sources:
@@ -576,6 +737,7 @@ class LazySupervisedDataset(Dataset):
                 self.data_args)
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
+        
         data_dict = preprocess(
             sources,
             self.tokenizer,
@@ -628,7 +790,7 @@ class DataCollatorForSupervisedDataset(object):
             else:
                 batch['images'] = images
             batch['image_sizes'] = image_sizes
-        print('image_sizes1111: ', batch['image_sizes'])
+        # print('batch_image sizes: ', image_sizes)
         return batch
 
 
@@ -660,9 +822,18 @@ def train(attn_implementation=None):
     print('\n\n')
     print(training_args)
 
-    import pickle
-    with open('args.pkl', 'wb') as fp:
-        pickle.dump({'model_args': model_args, 'data_args': data_args, 'training_args': training_args}, fp)
+    if True:
+        import pickle
+        with open('args.pkl', 'wb') as fp:
+            pickle.dump({'model_args': model_args, 'data_args': data_args, 'training_args': training_args}, fp)
+    if False: 
+        import pickle
+        with open('args.pkl', 'rb') as fp:
+            args = pickle.load(fp)
+        model_args = args['model_args']
+        data_args = args['data_args']
+        training_args = args['training_args']
+        attn_implementation = 'flash_attention_2'
 
     bnb_model_from_pretrained_args = {}
     print('loading LlavaLlamaForCausalLM for vision model')
@@ -670,7 +841,7 @@ def train(attn_implementation=None):
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
         attn_implementation=attn_implementation,
-        torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+        torch_dtype=torch.bfloat16,
         **bnb_model_from_pretrained_args
     )
     print('generation_config:', model.generation_config)
@@ -685,6 +856,7 @@ def train(attn_implementation=None):
         model.model.requires_grad_(False)
 
     if training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         else:
@@ -709,15 +881,13 @@ def train(attn_implementation=None):
             )
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
-    elif model_args.version == "llava_llama_3":
-        tokenizer.pad_token = "<|reserved_special_token_0|>" # only for llama3
-        conversation_lib.default_conversation = conversation_lib.conv_templates["llava_llama_3"]
     else:
-        tokenizer.pad_token = "<|reserved_special_token_0|>" if not "Llama-3" in model_args.model_name_or_path else tokenizer.eos_token
+        tokenizer.pad_token = "<|reserved_special_token_0|>" if "Llama-3" in model_args.model_name_or_path else tokenizer.eos_token
         if model_args.version in conversation_lib.conv_templates:
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
             conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
+        print(conversation_lib.default_conversation.get_prompt())
 
 
     model.get_model().initialize_vision_modules(
@@ -726,11 +896,12 @@ def train(attn_implementation=None):
     )
     
     vision_tower = model.get_vision_tower()
-    vision_tower.to(dtype=torch.bfloat16 if training_args.bf16 else torch.float16, device=training_args.device)
+    vision_tower.to(dtype=torch.bfloat16, device=training_args.device)
 
     data_args.image_processor = vision_tower.image_processor
     data_args.is_multimodal = True
 
+    model.config.image_aspect_ratio = data_args.image_aspect_ratio
     model.config.image_grid_pinpoints = model_args.image_grid_pinpoints
     model.config.tokenizer_padding_side = tokenizer.padding_side
     model.config.tokenizer_model_max_length = tokenizer.model_max_length
@@ -774,9 +945,7 @@ def train(attn_implementation=None):
     trainer.save_state()
 
     model.config.use_cache = True
-
-    safe_save_model_for_hf_trainer(trainer=trainer,
-                                    output_dir=training_args.output_dir)
+    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 
 
 if __name__ == "__main__":

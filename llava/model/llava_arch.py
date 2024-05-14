@@ -171,16 +171,10 @@ class LlavaMetaForCausalLM(ABC):
         if type(images) is list or images.ndim == 5:
 
             if type(images) is list:
-                for mi, x in enumerate(images):
-                    print(mi, x.shape)
                 images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
-            else:
-                print('images shape: ', images.shape)
             
             concat_images = torch.cat([image for image in images], dim=0)
-            print('concat_images: ', concat_images.shape)
             image_features = self.encode_images(concat_images)
-            print('image_features: ', image_features.shape)
             split_sizes = [image.shape[0] for image in images]
             image_features = torch.split(image_features, split_sizes, dim=0)
             mm_patch_merge_type = getattr(self.config, "mm_patch_merge_type", "flat")
@@ -200,7 +194,6 @@ class LlavaMetaForCausalLM(ABC):
                         image_feature = image_feature[1:]
                         height = width = self.get_vision_tower().num_patches_per_side
                         assert height * width == base_image_feature.shape[0]
-                        print('before: ', image_feature.shape, height, width, self.get_vision_tower().image_size)
                         if image_aspect_ratio == "anyres":
                             if hasattr(self.get_vision_tower(), "image_size"):
                                 vision_tower_image_size = self.get_vision_tower().image_size
@@ -211,8 +204,6 @@ class LlavaMetaForCausalLM(ABC):
                         else:
                             image_feature = image_feature.view(2, 2, height, width, -1)
 
-                        print('image_feature: ', image_feature.shape, self.model.image_newline.shape, image_sizes[image_idx], )
-
                         if "maxpool2x2" in mm_patch_merge_type:
                             image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
                             image_feature = image_feature.flatten(1, 2).flatten(2, 3)
@@ -222,7 +213,6 @@ class LlavaMetaForCausalLM(ABC):
                             image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
                             image_feature = image_feature.flatten(1, 2).flatten(2, 3)
                             image_feature = unpad_image(image_feature, image_sizes[image_idx])
-                            print('unpad image feature: ', image_feature.shape)  # 
                             image_feature = torch.cat((image_feature, self.model.image_newline[:, None, None].expand(*image_feature.shape[:-1], 1).to(image_feature.device)), dim=-1)
                             image_feature = image_feature.flatten(1, 2).transpose(0, 1)
                         else:

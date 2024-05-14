@@ -18,6 +18,7 @@ class SeparatorStyle(Enum):
     CHATML = auto()
     LLAMA_2 = auto()
     LLAMA_3 = auto()
+    LLAMA_3_V2 = auto()
     QWEN = auto()
     GEMMA = auto()
 
@@ -104,7 +105,30 @@ class Conversation:
                     chat_template_messages.append({"role": role, "content": message})
 
             # print(chat_template_messages)
+            # print(self.__dict__)
             return self.tokenizer.apply_chat_template(chat_template_messages, tokenize=False, add_generation_prompt=True)
+            # ret = "" if self.system == "" else self.system + self.sep + "\n"
+            # for role, message in messages:
+            #     if message:
+            #         if type(message) is tuple:
+            #             message, images = message
+            #             message = "<image>" * len(images) + message
+            #         ret += role + "\n" + message + self.sep + "\n"
+            #     else:
+            #         ret += role + "\n"
+            # return ret
+        elif self.sep_style == SeparatorStyle.LLAMA_3_V2:
+            chat_template_messages = [{"role": "system", "content": self.system}]
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, images = message
+                        message = "<image>" * len(images) + message
+                    chat_template_messages.append({"role": role, "content": message})
+
+            # print(chat_template_messages)
+            # print(self.__dict__)
+            return self.tokenizer.apply_chat_template(chat_template_messages, tokenize=False, add_generation_prompt=False)
             # ret = "" if self.system == "" else self.system + self.sep + "\n"
             # for role, message in messages:
             #     if message:
@@ -337,18 +361,6 @@ If a question does not make any sense, or is not factually coherent, explain why
     sep2="</s>",
 )
 
-conv_llama_3 = Conversation(
-    system="A chat between a curious user and an artificial intelligence assistant. "
-    "The assistant gives helpful, detailed, and polite answers to the user's questions.",
-    roles=("USER", "ASSISTANT"),
-    version="v3",
-    messages=(),
-    offset=0,
-    sep_style=SeparatorStyle.TWO,
-    sep=" ",
-    sep2="<|end_of_text|>",
-)
-
 conv_llava_llama_2 = Conversation(
     system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
     roles=("USER", "ASSISTANT"),
@@ -370,6 +382,21 @@ conv_llava_llama_3 = Conversation(
     tokenizer_id="meta-llama/Meta-Llama-3-8B-Instruct",
     tokenizer=AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct"),
     stop_token_ids=[128009],
+)
+
+
+conv_llava_llama_3_v2 = Conversation(
+    system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+    roles=("user", "assistant"),
+    version="llama_v3_v2",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.LLAMA_3_V2,
+    tokenizer_id="meta-llama/Meta-Llama-3-8B-Instruct",
+    tokenizer=AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct"),
+    stop_token_ids=[128009],
+    sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+    sep2='<|start_header_id|>user<|end_header_id|>\n\n'
 )
 
 conv_mistral_instruct = Conversation(
@@ -547,6 +574,7 @@ conv_templates = {
     "llava_v1_mmtag": conv_llava_v1_mmtag,
     "llava_llama_2": conv_llava_llama_2,
     "llava_llama_3": conv_llava_llama_3,
+    "llava_llama_3_v2": conv_llava_llama_3_v2,
     "llava_llama_2_simple": conv_llava_llama_2_simple,
     "llava_llama_2_mmtag": conv_llava_llama_2_mmtag,
     "llava_mistral_instruct": conv_mistral_instruct,

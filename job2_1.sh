@@ -35,7 +35,7 @@ else
     PRETRAIN_DATA="${JSON_FOLDER}/llava_image_.json ${JSON_FOLDER}/llava_med_alignment_500k_cleaned.json"
     FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/la_tune_256k.json ${JSON_FOLDER}/lrv_tune_331k.json ${JSON_FOLDER}/lvis_tune_220k_.json ${JSON_FOLDER}/svit_tune_157k.json ${JSON_FOLDER}/nlp_tune.json"
     MOE_FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
-    save_steps=100
+    save_steps=500
     num_train_epochs=1
 fi
 
@@ -108,14 +108,55 @@ torchrun \
     --report_to tensorboard \
     --cache_dir ./cache_dir
 
+exit;
 
 
 
-
-
-
-
-
-
+torchrun \
+    --nproc_per_node 1 \
+    --nnodes 1 \
+    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend c10d \
+    --max_restarts 0 \
+    --role `hostname -s`: \
+    --tee 3 \
+    llava/train/train_mem.py \
+    ${lora_params} \
+    --deepspeed ./scripts/zero3.json \
+    --model_name_or_path ${model_name_or_path} \
+    --version ${conv_version} \
+    --data_path ${PRETRAIN_DATA} \
+    --image_folder ${IMAGE_FOLDER} \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --tune_mm_mlp_adapter True \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
+    --image_aspect_ratio anyres \
+    --mm_patch_merge_type spatial_unpad \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
+    --group_by_modality_length True \
+    ${data_type_str} \
+    --output_dir ${pretrain_output_dir} \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps ${save_steps} \
+    --save_total_limit 1 \
+    --learning_rate ${learning_rate}\
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 8192 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 1 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir ./cache_dir
 
 
