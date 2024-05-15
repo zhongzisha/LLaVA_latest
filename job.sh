@@ -2,12 +2,12 @@
 
 #SBATCH --job-name=debug
 #SBATCh --mail-type=ALL
-#SBATCH --nodes=4
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:2,lscratch:200
+#SBATCH --gres=gpu:a100:4,lscratch:200
 #SBATCH --time=200:00:00
 ##SBATCH --exclusive
 #SBATCH --output=%x-%j.out
@@ -66,10 +66,10 @@ fi
 if [ "$CLUSTER_NAME" == "FRCE" ]; then
     per_device_train_batch_size=1
     gradient_accumulation_steps=32
-    learning_rate=5e-5
+    learning_rate=1e-3
     data_type_str="--bf16 False --fp16 True --tf32 False"
     deepspeed_config=zero2
-    atten_implementation=eager    # no flash-attn
+    atten_implementation=xformers    # no flash-attn
 else
     # a100
     per_device_train_batch_size=4    # 
@@ -89,9 +89,11 @@ else
 fi
 conv_version=plain
 model_name_or_path=microsoft/phi-2
-# model_name_or_path=BioMistral/BioMistral-7B
+model_name_or_path=BioMistral/BioMistral-7B
 model_name_or_path=lmsys/vicuna-7b-v1.5
-model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct 
+model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
+model_name_or_path=BioMistral/BioMistral-7B
+model_name_or_path=Qwen/Qwen1.5-7B-Chat
 pretrain_output_dir=${DATA_ROOT}/temp_20240514/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
@@ -196,7 +198,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     learning_rate=5e-5
     data_type_str="--bf16 False --fp16 True --tf32 False"
     deepspeed_config=zero2
-    atten_implementation=eager    # no flash-attn
+    atten_implementation=xformers    # no flash-attn
 else
     per_device_train_batch_size=4
     gradient_accumulation_steps=16
@@ -215,7 +217,7 @@ model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 conv_version=llava_llama_3_v2
-pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240514/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}

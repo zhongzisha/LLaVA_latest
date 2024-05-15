@@ -20,6 +20,7 @@ class SeparatorStyle(Enum):
     LLAMA_3 = auto()
     LLAMA_3_V2 = auto()
     QWEN = auto()
+    QWEN_V2 = auto()
     GEMMA = auto()
 
 
@@ -84,6 +85,18 @@ class Conversation:
                     ret += role + ":"
 
         elif self.sep_style == SeparatorStyle.CHATML:
+            ret = "" if self.system == "" else self.system + self.sep + "\n"
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, images = message
+                        message = "<image>" * len(images) + message
+                    ret += role + "\n" + message + self.sep + "\n"
+                else:
+                    ret += role + "\n"
+            return ret
+
+        elif self.sep_style == SeparatorStyle.QWEN_V2:
             ret = "" if self.system == "" else self.system + self.sep + "\n"
             for role, message in messages:
                 if message:
@@ -393,7 +406,7 @@ conv_llava_llama_3_v2 = Conversation(
     offset=0,
     sep_style=SeparatorStyle.LLAMA_3_V2,
     tokenizer_id="meta-llama/Meta-Llama-3-8B-Instruct",
-    tokenizer=AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct"),
+    tokenizer=None, # AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3-8B-Instruct"),
     stop_token_ids=[128009],
     sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
     sep2='<|start_header_id|>user<|end_header_id|>\n\n'
@@ -452,6 +465,19 @@ You are a helpful assistant.""",
     offset=0,
     sep_style=SeparatorStyle.CHATML,
     sep="<|im_end|>",
+)
+
+
+conv_qwen_v2 = Conversation(
+    system="""<|im_start|>system
+You are a helpful assistant.""",
+    roles=("user", "assistant"),
+    version="qwen_v2",
+    messages=[],
+    offset=0,
+    sep_style=SeparatorStyle.QWEN_V2,
+    sep="<|im_start|>assistant\n",
+    sep2="<|im_start|>user\n"
 )
 
 conv_gemma_instruct = Conversation(system="", roles=("<start_of_turn>user\n", "<start_of_turn>model\n"), version="gemma", messages=[], offset=0, sep_style=SeparatorStyle.GEMMA, sep="<end_of_turn>\n")
@@ -580,6 +606,7 @@ conv_templates = {
     "llava_mistral_instruct": conv_mistral_instruct,
     "mpt": conv_mpt,
     "qwen_1_5": conv_qwen,
+    "qwen_1_5_v2": conv_qwen_v2,
     "gemma_instruct": conv_gemma_instruct,
 }
 

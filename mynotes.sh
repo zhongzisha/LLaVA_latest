@@ -80,7 +80,8 @@ CUDA_VISIBLE_DEVICES=1 python llava/eval/run_eval_batch1.py \
 
 
 
-
+# 
+rsync -avh --exclude "__pycache__" llava scripts $FRCE_SERVER:/scratch/cluster_scratch/zhongz2/LLaVA/
 
 
 
