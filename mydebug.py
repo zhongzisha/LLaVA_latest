@@ -17,6 +17,7 @@ from llava import conversation as conversation_lib
 from packaging import version
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse('0.14')
 from llava.model import *
+from llava.mm_utils import process_anyres_image
 
 from PIL import Image
 
@@ -69,6 +70,7 @@ def preprocess_multimodal(
 data_path = ['/lscratch/26382740/train_json/llava_image_tune_cleaned.json']
 # data_path = ['/lscratch/26382740/train_json/nlp_tune.json']
 data_path = ['/tmp/zhongz2/train_json/llava_image_tune_cleaned.json']
+data_path = ['/tmp/zhongz2/train_json/llava_image_.json']
 
 
 list_data_dict = []
@@ -78,7 +80,109 @@ for data in data_path:
         i['id'] = len(list_data_dict)
         list_data_dict.append(i)
 
-if True: # 
+if True: # plain
+    model_name_or_path = "Qwen/Qwen1.5-7B-Chat"
+
+    tokenizer = transformers.AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        cache_dir="./cache_dir",
+        use_fast=False,
+    )
+    config = transformers.AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
+    model = LlavaQwenForCausalLM.from_pretrained(
+        model_name_or_path,
+        config=config,
+        cache_dir="./cache_dir"
+    )
+    tokenizer.bos_token = '<|im_start|>'
+    tokenizer.unk_token = tokenizer.eos_token
+    # tokenizer.pad_token = tokenizer.unk_token
+
+    index = 0
+    sources = [list_data_dict[index]]
+
+    sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]))
+    has_image = 'image' in list_data_dict[index]
+    conv = copy.deepcopy(conversation_lib.conv_templates["plain"])
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # add end signal and concatenate together
+    conversations = []
+    for source in sources:
+        assert len(source) == 2
+        assert DEFAULT_IMAGE_TOKEN in source[0]['value']
+        source[0]['value'] = DEFAULT_IMAGE_TOKEN
+        conversation = source[0]['value'] + source[1]['value'] + conversation_lib.default_conversation.sep
+        conversations.append(conversation)
+    # tokenize conversations
+    input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    targets = copy.deepcopy(input_ids)
+    for target, source in zip(targets, sources):
+        tokenized_len = len(tokenizer_image_token(source[0]['value'], tokenizer))
+        target[:tokenized_len] = IGNORE_INDEX
+
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+    
+
+    input_ids = torch.nn.utils.rnn.pad_sequence(
+        input_ids,
+        batch_first=True,
+        padding_value=tokenizer.pad_token_id)
+    labels = torch.nn.utils.rnn.pad_sequence(targets,
+                                                batch_first=True,
+                                                padding_value=IGNORE_INDEX)
+    input_ids = input_ids[:, :tokenizer.model_max_length]
+    labels = labels[:, :tokenizer.model_max_length]
+    batch = dict(
+        input_ids=input_ids,
+        labels=labels,
+        attention_mask=input_ids.ne(tokenizer.pad_token_id),
+    )
+
+    from types import SimpleNamespace
+    vision_tower_cfg = SimpleNamespace(mm_vision_tower="openai/clip-vit-large-patch14-336", mm_vision_select_layer=-2, mm_vision_select_feature="patch")
+    vision_tower = CLIPVisionTower("openai/clip-vit-large-patch14-336", args=vision_tower_cfg, delay_load=False)
+
+    image_aspect_ratio = "anyres"
+    image_grid_pinpoints = "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]"
+    image_file = list_data_dict[index]['image']
+    image_folder = '/tmp/zhongz2/data' # self.data_args.image_folder
+    processor = vision_tower.image_processor
+    image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+    image_size = image.size
+    if image_aspect_ratio == 'pad':
+        def expand2square(pil_img, background_color):
+            width, height = pil_img.size
+            if width == height:
+                return pil_img
+            elif width > height:
+                result = Image.new(pil_img.mode, (width, width), background_color)
+                result.paste(pil_img, (0, (width - height) // 2))
+                return result
+            else:
+                result = Image.new(pil_img.mode, (height, height), background_color)
+                result.paste(pil_img, ((height - width) // 2, 0))
+                return result
+        image = expand2square(image, tuple(int(x*255) for x in processor.image_mean))
+        image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    elif image_aspect_ratio == 'anyres':
+        image = process_anyres_image(image, processor, image_grid_pinpoints)
+    else:
+        image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+    images = [image]
+    image_sizes = [image_size]
+    if all(x is not None and x.shape == images[0].shape for x in images):
+        batch['images'] = torch.stack(images)
+    else:
+        batch['images'] = images
+    batch['image_sizes'] = image_sizes
+
+
+
+
+if True: # Qwen
     model_name_or_path = "Qwen/Qwen1.5-7B-Chat"
 
     tokenizer = transformers.AutoTokenizer.from_pretrained(

@@ -131,9 +131,51 @@ deepspeed \
     ${data_type_str} \
     --output_dir ${pretrain_output_dir} \
     --num_train_epochs ${num_train_epochs} \
-    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps ${gradient_accumulation_steps} \
+    --gradient_accumulation_steps 16 \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps ${save_steps} \
+    --save_total_limit 1 \
+    --learning_rate 5e-4 \
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 32768 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 1 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir ./cache_dir
+
+
+CUDA_VISIBLE_DEVICES=0 \
+deepspeed \
+    llava/train/train_xformers_qwen.py \
+    ${lora_params} \
+    --deepspeed ./scripts/${deepspeed_config}.json \
+    --model_name_or_path ${model_name_or_path} \
+    --version ${conv_version} \
+    --data_path ${JSON_FOLDER}/llava_med_alignment_500k_cleaned.json \
+    --image_folder ${IMAGE_FOLDER} \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --tune_mm_mlp_adapter True \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
+    --image_aspect_ratio anyres \
+    --mm_patch_merge_type spatial_unpad \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
+    --group_by_modality_length True \
+    ${data_type_str} \
+    --output_dir ${pretrain_output_dir} \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 32 \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
     --save_steps ${save_steps} \
@@ -149,7 +191,6 @@ deepspeed \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir
-
 
 
 deepspeed \

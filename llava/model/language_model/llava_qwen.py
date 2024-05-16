@@ -78,9 +78,15 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
         if inputs_embeds is None:
-            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, image_sizes)
-
-        return super().forward(
+            input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, image_sizes)
+            # print('input_ids: ', input_ids.shape if input_ids is not None else "None")
+            # print('position_ids: ', position_ids.shape if position_ids is not None else "None")
+            # print('attention_mask: ', attention_mask.shape if attention_mask is not None else "None")
+            # print('past_key_values: ', past_key_values.shape if past_key_values is not None else "None")
+            # print('inputs_embeds: ', inputs_embeds.shape if inputs_embeds is not None else "None")
+            # print('labels: ', labels.shape)
+        
+        forward_results = super().forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -92,6 +98,8 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        # print('forward_results: ', forward_results)
+        return forward_results
 
     @torch.no_grad()
     def generate(

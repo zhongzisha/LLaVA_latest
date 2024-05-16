@@ -425,6 +425,7 @@ def preprocess_plain(
     sources: Sequence[str],
     tokenizer: transformers.PreTrainedTokenizer,
 ) -> Dict:
+    # print('sources: ', sources)
     # add end signal and concatenate together
     conversations = []
     for source in sources:
@@ -845,7 +846,7 @@ class LazySupervisedDataset(Dataset):
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['image'] = torch.zeros(1, 3, crop_size['height'], crop_size['width'])
             data_dict['image_size'] = (crop_size['width'], crop_size['height']) 
         return data_dict
 
@@ -882,7 +883,10 @@ class DataCollatorForSupervisedDataset(object):
             else:
                 batch['images'] = images
             batch['image_sizes'] = image_sizes
-        # print('batch_image sizes: ', image_sizes)
+        # print('batch image_sizes: ', image_sizes)
+        # print('batch images: ', batch['images'].shape)
+        # print('batch input_ids: ', batch['input_ids'].shape)
+        # print('batch labels: ', batch['labels'].shape) 
         return batch
 
 
@@ -1144,7 +1148,8 @@ def train():
     )
     if 'qwen' in model_args.model_name_or_path.lower():
         tokenizer.bos_token = '<|im_start|>'
-        tokenizer.unk_token = tokenizer.eos_token
+        if tokenizer.unk_token is None:
+            tokenizer.unk_token = tokenizer.eos_token
     elif 'llama-3' in model_args.model_name_or_path.lower():
         tokenizer.unk_token = "<|reserved_special_token_0|>"
 
@@ -1158,7 +1163,8 @@ def train():
     elif model_args.version == "v0.5":
         tokenizer.pad_token = tokenizer.unk_token
     else:
-        tokenizer.pad_token = tokenizer.unk_token
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.unk_token
         if model_args.version in conversation_lib.conv_templates:
             conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
         else:
