@@ -94,7 +94,7 @@ model_name_or_path=lmsys/vicuna-7b-v1.5
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 model_name_or_path=BioMistral/BioMistral-7B
 model_name_or_path=Qwen/Qwen1.5-7B-Chat
-pretrain_output_dir=${DATA_ROOT}/temp_20240514/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}

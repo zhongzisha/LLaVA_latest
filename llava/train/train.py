@@ -556,7 +556,7 @@ def preprocess_llama_3_v2(
                 add_generation_prompt=True
             ))
     if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt', image_token_index=128256) for prompt in conversations], dim=0)
     else:
         input_ids = tokenizer(
             conversations,
@@ -582,15 +582,15 @@ def preprocess_llama_3_v2(
                 break
             
             parts = rou.split(conv.sep2)
-            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
-            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer, image_token_index=128256))  # if add_generation_prompt=True
+            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer, image_token_index=128256))  # 
             if i!=0:
                 rou_len -= 1
             else:
                 cur_len += rou_len
                 continue
 
-            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer, image_token_index=128256)) - 1
             target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
 
             cur_len += rou_len    
@@ -1109,6 +1109,7 @@ def train():
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=training_args.gradient_checkpointing)
 
     if training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
         else:

@@ -148,9 +148,46 @@ deepspeed \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \
-    --cache_dir /tmp/$USER/cache_dir
+    --cache_dir ./cache_dir
 
 
+
+deepspeed \
+    llava/train/train_xformers.py \
+    ${lora_params} \
+    --deepspeed ./scripts/${deepspeed_config}.json \
+    --model_name_or_path ${model_name_or_path} \
+    --version ${conv_version} \
+    --data_path "${JSON_FOLDER}/llava_image_.json" \
+    --image_folder ${IMAGE_FOLDER} \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --tune_mm_mlp_adapter True \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
+    --group_by_modality_length True \
+    ${data_type_str} \
+    --output_dir ${pretrain_output_dir} \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps ${save_steps} \
+    --save_total_limit 1 \
+    --learning_rate ${learning_rate}\
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 2048 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 1 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir ./cache_dir
 
 torchrun \
     --nproc_per_node 1 \
