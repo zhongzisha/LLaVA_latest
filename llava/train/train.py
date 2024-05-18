@@ -846,7 +846,7 @@ class LazySupervisedDataset(Dataset):
         elif self.data_args.is_multimodal:
             # image does not exist in the data, but the model is multimodal
             crop_size = self.data_args.image_processor.crop_size
-            data_dict['image'] = torch.zeros(1, 3, crop_size['height'], crop_size['width'])
+            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
             data_dict['image_size'] = (crop_size['width'], crop_size['height']) 
         return data_dict
 
@@ -1044,14 +1044,23 @@ def train_bak(attn_implementation=None):
     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
 
 
-def train():
+def train(attn_implementation=None):
     global local_rank
 
     parser = transformers.HfArgumentParser(
         (ModelArguments, DataArguments, TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
+    
+    if local_rank == 0:
+        print('\n\n')
+        print(model_args)
+        print('\n\n')
+        print(data_args)
+        print('\n\n')
+        print(training_args)
 
     bnb_model_from_pretrained_args = {}
     if training_args.bits in [4, 8]:

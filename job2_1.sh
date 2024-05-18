@@ -53,7 +53,7 @@ conv_version=${10}
 if [ "${SLURM_JOB_NODELIST}" != "" ]; then
     MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
     NNODES=$SLURM_NNODES
-    GPUS_PER_NODE=8
+    GPUS_PER_NODE=4
 else
     MASTER_ADDR=`hostname`
     NNODES=1

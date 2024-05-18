@@ -26,7 +26,7 @@ VIDEO_FOLDER="/tmp/$USER/data"
 PRETRAIN_DATA="${JSON_FOLDER}/llava_image_.json ${JSON_FOLDER}/llava_med_alignment_500k_cleaned.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/la_tune_256k.json ${JSON_FOLDER}/lrv_tune_331k.json ${JSON_FOLDER}/lvis_tune_220k_.json ${JSON_FOLDER}/svit_tune_157k.json ${JSON_FOLDER}/nlp_tune.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
-# FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json"
+FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json"
 
 MOE_FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json ${JSON_FOLDER}/nlp_tune.json"
 
@@ -101,7 +101,7 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 8192 \
+    --model_max_length 32768 \
     --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
@@ -109,9 +109,9 @@ torchrun \
     --cache_dir ./cache_dir \
     --torch_compile True \
     --torch_compile_backend "inductor" \
-    --dataloader_drop_last True
+    --dataloader_drop_last True 
 
-
+exit;
 
 
 
@@ -126,9 +126,11 @@ torchrun \
     --max_restarts 0 \
     --role `hostname -s`: \
     --tee 3 \
-    llava/train/train_mem.py \
+
+deepspeed \
+    llava/train/train_${atten_implementation}.py \
     ${lora_params} \
-    --deepspeed ./scripts/zero3.json \
+    --deepspeed ./scripts/zero3_offload_nvme.json \
     --model_name_or_path ${model_name_or_path} \
     --version ${conv_version} \
     --data_path ${FINETUNE_DATA} \
@@ -143,23 +145,22 @@ torchrun \
     --mm_patch_merge_type spatial_unpad \
     --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
     --group_by_modality_length True \
-    --bf16 True \
-    --tf32 True \
+    ${data_type_str} \
     --output_dir ${finetune_output_dir} \
-    --num_train_epochs 0.0005 \
-    --per_device_train_batch_size 1 \
-    --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 16 \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
     --evaluation_strategy "no" \
     --save_strategy "steps" \
-    --save_steps 20 \
+    --save_steps ${save_steps} \
     --save_total_limit 1 \
-    --learning_rate 1e-5 \
+    --learning_rate ${learning_rate}\
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 8192 \
+    --model_max_length 32768 \
     --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
@@ -167,5 +168,8 @@ torchrun \
     --cache_dir ./cache_dir \
     --dataloader_drop_last True
 
+
+    --fsdp "full_shard auto_wrap offload" \
+    --fsdp_transformer_layer_cls_to_wrap 'Qwen2DecoderLayer'
 
 
