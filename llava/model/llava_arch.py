@@ -109,7 +109,10 @@ class LlavaMetaModel:
 
             incompatible_keys = self.mm_projector.load_state_dict(get_w(mm_projector_weights, "mm_projector"))
             rank0_print(f"Loaded mm projector weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
-            incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
+            if fsdp is not None and len(fsdp) > 0:
+                incompatible_keys = self.vision_resampler[0].load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
+            else:
+                incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
             rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
 
 
@@ -159,7 +162,7 @@ class LlavaMetaForCausalLM(ABC):
 
     def encode_images(self, images):
         image_features = self.get_model().get_vision_tower()(images)
-        image_features = self.get_model().vision_resampler(image_features, images=images)
+        image_features = self.get_model().vision_resampler[0](image_features, images=images)
         image_features = self.get_model().mm_projector(image_features)
         return image_features
 

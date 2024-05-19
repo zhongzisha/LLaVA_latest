@@ -557,7 +557,7 @@ def preprocess_llama_3_v2(
                 add_generation_prompt=True
             ))
     if has_image:
-        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt', image_token_index=128256) for prompt in conversations], dim=0)
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
     else:
         input_ids = tokenizer(
             conversations,
@@ -583,15 +583,15 @@ def preprocess_llama_3_v2(
                 break
             
             parts = rou.split(conv.sep2)
-            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer, image_token_index=128256))  # if add_generation_prompt=True
-            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer, image_token_index=128256))  # 
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
             if i!=0:
                 rou_len -= 1
             else:
                 cur_len += rou_len
                 continue
 
-            ans_len = len(tokenizer_image_token(parts[0], tokenizer, image_token_index=128256)) - 1
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
             target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
 
             cur_len += rou_len    
@@ -1053,7 +1053,7 @@ def train(attn_implementation=None):
 
     local_rank = training_args.local_rank
     compute_dtype = (torch.float16 if training_args.fp16 else (torch.bfloat16 if training_args.bf16 else torch.float32))
-    
+
     if local_rank == 0:
         print('\n\n')
         print(model_args)

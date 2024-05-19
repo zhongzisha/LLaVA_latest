@@ -101,20 +101,20 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 32768 \
+    --model_max_length 8192 \
     --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
-    --torch_compile True \
-    --torch_compile_backend "inductor" \
     --dataloader_drop_last True 
 
 exit;
 
 
 
+    --torch_compile True \
+    --torch_compile_backend "inductor" \
 
 
 
@@ -130,7 +130,6 @@ torchrun \
 deepspeed \
     llava/train/train_${atten_implementation}.py \
     ${lora_params} \
-    --deepspeed ./scripts/zero3_offload_nvme.json \
     --model_name_or_path ${model_name_or_path} \
     --version ${conv_version} \
     --data_path ${FINETUNE_DATA} \
@@ -160,16 +159,133 @@ deepspeed \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 32768 \
+    --model_max_length 8192 \
     --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
-    --dataloader_drop_last True
-
-
+    --dataloader_drop_last True \
     --fsdp "full_shard auto_wrap offload" \
-    --fsdp_transformer_layer_cls_to_wrap 'Qwen2DecoderLayer'
+    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
+
+
+
+
+
+
+
+
+
+
+
+torchrun \
+    --nproc_per_node $GPUS_PER_NODE \
+    --nnodes $NNODES \
+    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend c10d \
+    --max_restarts 0 \
+    --role `hostname -s`: \
+    --tee 3 \
+    llava/train/train_${atten_implementation}.py \
+    ${lora_params} \
+    --model_name_or_path ${model_name_or_path} \
+    --version ${conv_version} \
+    --data_path ${FINETUNE_DATA} \
+    --image_folder ${IMAGE_FOLDER} \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --pretrain_mm_mlp_adapter ${pretrain_output_dir}/mm_projector.bin \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
+    --image_aspect_ratio anyres \
+    --mm_patch_merge_type spatial_unpad \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
+    --group_by_modality_length True \
+    ${data_type_str} \
+    --output_dir ${finetune_output_dir} \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps ${save_steps} \
+    --save_total_limit 1 \
+    --learning_rate ${learning_rate}\
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 8192 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 1 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir ./cache_dir \
+    --dataloader_drop_last True \
+    --fsdp "full_shard auto_wrap offload" \
+    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
+
+
+
+torchrun \
+    --nproc_per_node $GPUS_PER_NODE \
+    --nnodes $NNODES \
+    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend c10d \
+    --max_restarts 0 \
+    --role `hostname -s`: \
+    --tee 3 \
+    llava/train/train_${atten_implementation}.py \
+    ${lora_params} \
+    --model_name_or_path ${model_name_or_path} \
+    --version ${conv_version} \
+    --data_path ${FINETUNE_DATA} \
+    --image_folder ${IMAGE_FOLDER} \
+    --vision_tower openai/clip-vit-large-patch14-336 \
+    --pretrain_mm_mlp_adapter ${pretrain_output_dir}/mm_projector.bin \
+    --mm_vision_select_layer -2 \
+    --mm_use_im_start_end False \
+    --mm_use_im_patch_token False \
+    --mm_projector_type "mlp2x_gelu" \
+    --image_aspect_ratio anyres \
+    --mm_patch_merge_type spatial_unpad \
+    --image_grid_pinpoints "[(336, 672), (672, 336), (672, 672), (1008, 336), (336, 1008)]" \
+    --group_by_modality_length True \
+    ${data_type_str} \
+    --output_dir ${finetune_output_dir} \
+    --num_train_epochs ${num_train_epochs} \
+    --per_device_train_batch_size ${per_device_train_batch_size} \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps ${gradient_accumulation_steps} \
+    --evaluation_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps ${save_steps} \
+    --save_total_limit 1 \
+    --learning_rate ${learning_rate}\
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 1 \
+    --model_max_length 8192 \
+    --gradient_checkpointing True \
+    --dataloader_num_workers 1 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir ./cache_dir \
+    --dataloader_drop_last True \
+    --fsdp "full_shard auto_wrap offload" \
+    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
+
+
+
+
+
+
+
+
+
 
 
