@@ -46,8 +46,8 @@ if [ -z "${MY_DEBUG}" ]; then
 save_steps=1000
 num_train_epochs=1
 else
-save_steps=2
-num_train_epochs=0.005
+save_steps=5
+num_train_epochs=1
 fi
 
 if [ "${SLURM_JOB_NODELIST}" != "" ]; then
@@ -180,13 +180,7 @@ deepspeed \
 
 
 torchrun \
-    --nproc_per_node $GPUS_PER_NODE \
-    --nnodes $NNODES \
-    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
-    --rdzv_backend c10d \
-    --max_restarts 0 \
-    --role `hostname -s`: \
-    --tee 3 \
+    --nproc_per_node 2 \
     llava/train/train_${atten_implementation}.py \
     ${lora_params} \
     --model_name_or_path ${model_name_or_path} \
@@ -231,13 +225,7 @@ torchrun \
 
 # Qwen1.5
 torchrun \
-    --nproc_per_node $GPUS_PER_NODE \
-    --nnodes $NNODES \
-    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
-    --rdzv_backend c10d \
-    --max_restarts 0 \
-    --role `hostname -s`: \
-    --tee 3 \
+    --nproc_per_node 2 \
     llava/train/train_${atten_implementation}.py \
     ${lora_params} \
     --model_name_or_path ${model_name_or_path} \

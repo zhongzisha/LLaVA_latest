@@ -188,6 +188,17 @@ def find_all_linear_names(model):
     return list(lora_module_names)
 
 
+def trainer_save_model_safe_fsdp(trainer: transformers.Trainer,
+                                 output_dir: str):
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import StateDictType, FullStateDictConfig
+
+    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(
+        trainer.model, StateDictType.FULL_STATE_DICT, save_policy
+    ):
+        trainer.save_model(output_dir=output_dir)
+
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
                                    output_dir: str):
     """Collects the state dict and dump to disk."""
@@ -904,146 +915,6 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 data_collator=data_collator)
 
 
-def train_bak(attn_implementation=None):
-    global local_rank
-
-    parser = transformers.HfArgumentParser(
-        (ModelArguments, DataArguments, TrainingArguments))
-    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-    local_rank = training_args.local_rank
-    print('\n\n')
-    print(model_args)
-    print('\n\n')
-    print(data_args)
-    print('\n\n')
-    print(training_args)
-
-    if True:
-        import pickle
-        with open('args.pkl', 'wb') as fp:
-            pickle.dump({'model_args': model_args, 'data_args': data_args, 'training_args': training_args}, fp)
-    if False: 
-        import pickle
-        with open('args.pkl', 'rb') as fp:
-            args = pickle.load(fp)
-        model_args = args['model_args']
-        data_args = args['data_args']
-        training_args = args['training_args']
-        attn_implementation = 'flash_attention_2'
-
-    bnb_model_from_pretrained_args = {}
-    print('loading LlavaLlamaForCausalLM for vision model')
-    model = LlavaLlamaForCausalLM.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        attn_implementation=attn_implementation,
-        torch_dtype=torch.bfloat16,
-        **bnb_model_from_pretrained_args
-    )
-
-    print('generation_config:', model.generation_config)
-    model.generation_config = transformers.GenerationConfig.from_pretrained(model_args.model_name_or_path)
-    model.generation_config.do_sample = False  # use greedy decoding
-    model.generation_config.temperature = 1.0  # 
-    model.generation_config.top_p = 1.0  # 
-    model.generation_config.repetition_penalty = 1.0  # disable repetition penalty
-    model.config.use_cache = False
-    
-    if model_args.freeze_backbone:
-        model.model.requires_grad_(False)
-
-    if training_args.gradient_checkpointing:
-        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
-    tokenizer = transformers.AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-        cache_dir=training_args.cache_dir,
-        model_max_length=training_args.model_max_length,
-        padding_side="right",
-        use_fast=False,
-    )
-
-    if model_args.version == "v0":
-        if tokenizer.pad_token is None:
-            smart_tokenizer_and_embedding_resize(
-                special_tokens_dict=dict(pad_token="[PAD]"),
-                tokenizer=tokenizer,
-                model=model,
-            )
-    elif model_args.version == "v0.5":
-        tokenizer.pad_token = tokenizer.unk_token
-    else:
-        tokenizer.pad_token = "<|reserved_special_token_0|>" if "Llama-3" in model_args.model_name_or_path else tokenizer.eos_token
-        if model_args.version in conversation_lib.conv_templates:
-            conversation_lib.default_conversation = conversation_lib.conv_templates[model_args.version]
-        else:
-            conversation_lib.default_conversation = conversation_lib.conv_templates["vicuna_v1"]
-        print(conversation_lib.default_conversation.get_prompt())
-
-    model.get_model().initialize_vision_modules(
-        model_args=model_args,
-        fsdp=training_args.fsdp
-    )
-    
-    vision_tower = model.get_vision_tower()
-    vision_tower.to(dtype=torch.bfloat16, device=training_args.device)
-
-    data_args.image_processor = vision_tower.image_processor
-    data_args.is_multimodal = True
-
-    model.config.image_aspect_ratio = data_args.image_aspect_ratio
-    model.config.image_grid_pinpoints = model_args.image_grid_pinpoints
-    model.config.tokenizer_padding_side = tokenizer.padding_side
-    model.config.tokenizer_model_max_length = tokenizer.model_max_length
-
-    model.config.tune_mm_mlp_adapter = training_args.tune_mm_mlp_adapter = model_args.tune_mm_mlp_adapter
-    if model_args.tune_mm_mlp_adapter:
-        model.requires_grad_(False)
-        for p in model.get_model().mm_projector.parameters():
-            p.requires_grad = True
-
-    model.config.freeze_mm_mlp_adapter = training_args.freeze_mm_mlp_adapter
-    if training_args.freeze_mm_mlp_adapter:
-        for p in model.get_model().mm_projector.parameters():
-            p.requires_grad = False
-
-    model.config.mm_use_im_start_end = data_args.mm_use_im_start_end = model_args.mm_use_im_start_end
-    model.config.mm_projector_lr = training_args.mm_projector_lr
-    training_args.use_im_start_end = model_args.mm_use_im_start_end
-    model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
-    model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
-
-    data_module = make_supervised_data_module(tokenizer=tokenizer,
-                                              data_args=data_args,
-                                              model_args=model_args)
-    print('=='*80)
-    print('model: ')
-    print(model) 
-    print('=='*80)
-    print(model.dtype)
-    print(model.__dict__)
-    print('=='*80)
-    trainer = LLaVATrainer(model=model,
-                    tokenizer=tokenizer,
-                    args=training_args,
-                    **data_module)
-
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
-    trainer.save_state()
-
-    model.config.use_cache = True
-    safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-
-
 def train(attn_implementation=None):
     global local_rank
 
@@ -1238,8 +1109,10 @@ def train(attn_implementation=None):
                     **data_module)
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        print('loading from previous checkpoing')
         trainer.train(resume_from_checkpoint=True)
     else:
+        print('training from scratch')
         trainer.train()
     trainer.save_state()
 
@@ -1257,8 +1130,12 @@ def train(attn_implementation=None):
             model.save_pretrained(training_args.output_dir, state_dict=state_dict)
             torch.save(non_lora_state_dict, os.path.join(training_args.output_dir, 'non_lora_trainables.bin'))
     else:
-        safe_save_model_for_hf_trainer(trainer=trainer,
-                                       output_dir=training_args.output_dir)
+        if training_args.fsdp is not None and len(training_args.fsdp) > 0:
+            trainer_save_model_safe_fsdp(trainer=trainer, 
+                                         output_dir=training_args.output_dir)
+        else:
+            safe_save_model_for_hf_trainer(trainer=trainer,
+                                           output_dir=training_args.output_dir)
 
 
 if __name__ == "__main__":
