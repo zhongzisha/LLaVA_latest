@@ -46,7 +46,7 @@ if [ -z "${MY_DEBUG}" ]; then
 save_steps=1000
 num_train_epochs=1
 else
-save_steps=5
+save_steps=2
 num_train_epochs=0.005
 fi
 
@@ -225,11 +225,11 @@ torchrun \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
     --dataloader_drop_last True \
-    --fsdp "full_shard auto_wrap offload" \
+    --fsdp "full_shard auto_wrap" \
     --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
 
 
-
+# Qwen1.5
 torchrun \
     --nproc_per_node $GPUS_PER_NODE \
     --nnodes $NNODES \
@@ -269,15 +269,15 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 8192 \
+    --model_max_length 32768 \
     --gradient_checkpointing True \
     --dataloader_num_workers 1 \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
     --dataloader_drop_last True \
-    --fsdp "full_shard auto_wrap offload" \
-    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
+    --fsdp "full_shard auto_wrap" \
+    --fsdp_transformer_layer_cls_to_wrap 'Qwen2DecoderLayer'
 
 
 
