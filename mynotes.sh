@@ -30,8 +30,9 @@ python -m llava.eval.model_vqa_loader \
     --conv-mode ${CONV}
 
 CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240518/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/llava_llama3_debug
+# CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240520/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_llama_debug
 CONV="llava_llama_3_v2"
-CKPT_NAME="lmms-lab/llama3-llava-next-8b"
+# CKPT_NAME="lmms-lab/llama3-llava-next-8b"
 python -m llava.eval.model_vqa_loader_llama3 \
     --model-path ${CKPT_NAME} \
     --question-file ${EVAL}/textvqa/llava_textvqa_val_v051_ocr.jsonl \

@@ -2,12 +2,12 @@
 
 #SBATCH --job-name=debug
 #SBATCh --mail-type=ALL
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=200G
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:4,lscratch:200
+#SBATCH --gres=gpu:a100:2,lscratch:200
 #SBATCH --time=200:00:00
 ##SBATCH --exclusive
 #SBATCH --output=%x-%j.out
@@ -93,8 +93,8 @@ model_name_or_path=BioMistral/BioMistral-7B
 model_name_or_path=lmsys/vicuna-7b-v1.5
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 # model_name_or_path=BioMistral/BioMistral-7B
-model_name_or_path=Qwen/Qwen1.5-7B-Chat
-pretrain_output_dir=${DATA_ROOT}/temp_20240518/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+# model_name_or_path=Qwen/Qwen1.5-7B-Chat
+pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -119,11 +119,12 @@ fi
 
 wait
 echo "stage 1 done" 
-exit;
+# exit;
 
 
 
 ################### stage 2 #######################
+if [ "0" == "1" ]; then
 do_lora=0
 if [ ${do_lora} -eq 1 ]; then
     lora_params="--lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5"
@@ -138,8 +139,8 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     deepspeed_config=zero2
     atten_implementation=eager    # no flash-attn
 else
-    per_device_train_batch_size=1
-    gradient_accumulation_steps=32
+    per_device_train_batch_size=2
+    gradient_accumulation_steps=8
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
@@ -154,8 +155,8 @@ conv_version=llava_llama_2
 model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
-conv_version=llava_llama_3_v2
-pretrain_output_dir=${DATA_ROOT}/temp_20240518/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+conv_version=llava_llama_3
+pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -181,7 +182,7 @@ if [ ! -e "${finetune_output_dir}/config.json" ]; then
 else
     echo "stage 2 already done"
 fi
-
+fi
 
 
 
@@ -202,7 +203,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
 else
     per_device_train_batch_size=2
     gradient_accumulation_steps=8
-    learning_rate=1e-5
+    learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
     atten_implementation=flash_attention_2
@@ -217,9 +218,7 @@ model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 conv_version=llava_llama_3_v2
-model_name_or_path=Qwen/Qwen1.5-7B-Chat
-conv_version=qwen_1_5_v2
-pretrain_output_dir=${DATA_ROOT}/temp_20240520/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -228,7 +227,7 @@ LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
 
 if [ ! -e "${finetune_output_dir}/config.json" ]; then
     srun --export ALL --jobid $SLURM_JOB_ID \
-    bash job2_2_anyres.sh \
+    bash job2_2_anyres_llama3.sh \
     ${per_device_train_batch_size} \
     ${gradient_accumulation_steps} \
     ${learning_rate} \
