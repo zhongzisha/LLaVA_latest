@@ -113,11 +113,6 @@ exit;
 
 
 
-    --torch_compile True \
-    --torch_compile_backend "inductor" \
-
-
-
 torchrun \
     --nproc_per_node $GPUS_PER_NODE \
     --nnodes $NNODES \
@@ -126,10 +121,9 @@ torchrun \
     --max_restarts 0 \
     --role `hostname -s`: \
     --tee 3 \
-
-deepspeed \
     llava/train/train_${atten_implementation}.py \
     ${lora_params} \
+    --deepspeed ./scripts/zero3_offload_nvme.json \
     --model_name_or_path ${model_name_or_path} \
     --version ${conv_version} \
     --data_path ${FINETUNE_DATA} \
@@ -161,13 +155,11 @@ deepspeed \
     --logging_steps 1 \
     --model_max_length 8192 \
     --gradient_checkpointing True \
-    --dataloader_num_workers 1 \
+    --dataloader_num_workers 2 \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
-    --dataloader_drop_last True \
-    --fsdp "full_shard auto_wrap offload" \
-    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer'
+    --dataloader_drop_last True 
 
 
 
