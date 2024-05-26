@@ -2,10 +2,10 @@
 
 #SBATCH --job-name=debug
 #SBATCh --mail-type=ALL
-#SBATCH --nodes=4
+#SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=200G
+#SBATCH --mem=100G
 #SBATCH --partition=gpu
 #SBATCH --gres=gpu:a100:2,lscratch:200
 #SBATCH --time=200:00:00
@@ -201,7 +201,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     deepspeed_config=zero2
     atten_implementation=xformers    # no flash-attn
 else
-    per_device_train_batch_size=2
+    per_device_train_batch_size=4
     gradient_accumulation_steps=8
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
@@ -225,6 +225,9 @@ mkdir -p ${moe_output_dir}
 NUM_CKPT_DIRS=$(find $finetune_output_dir -maxdepth 1 -type d -name "checkpoint-*" | wc -l)
 LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
 
+mkdir -p $MYTMP_DIR/offload
+ln -sf $MYTMP_DIR/offload /home/zhongz2/offload_llama3
+
 if [ ! -e "${finetune_output_dir}/config.json" ]; then
     srun --export ALL --jobid $SLURM_JOB_ID \
     bash job2_2_anyres_llama3.sh \
@@ -232,7 +235,7 @@ if [ ! -e "${finetune_output_dir}/config.json" ]; then
     ${gradient_accumulation_steps} \
     ${learning_rate} \
     "${data_type_str}" \
-    "zero3" \
+    "zero3_offload_nvme_llama3" \
     ${atten_implementation} \
     ${model_name_or_path} \
     "${pretrain_output_dir}" \

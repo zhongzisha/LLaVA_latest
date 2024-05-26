@@ -114,16 +114,21 @@ LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
 cd $CODE_ROOT
 
 EVAL="/lscratch/${SLURM_JOB_ID}/eval"
-# CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240520/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_llama_debug
-# CONV="llava_llama_3_v2"
-# python -m llava.eval.model_vqa_loader_llama3 \
-#     --model-path ${CKPT_NAME} \
-#     --question-file ${EVAL}/textvqa/llava_textvqa_val_v051_ocr.jsonl \
-#     --image-folder ${EVAL}/textvqa/train_images \
-#     --answers-file ${EVAL}/textvqa/answers/${CKPT_NAME}-${CONV}.jsonl \
-#     --temperature 0 \
-#     --conv-mode ${CONV}
 
+TYPE=${1}
+
+if [ "${TYPE}" == "llama3" ]; then
+CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240520/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_llama_debug
+CONV="llava_llama_3_v2"
+python -m llava.eval.model_vqa_loader_llama3 \
+    --model-path ${CKPT_NAME} \
+    --question-file ${EVAL}/textvqa/llava_textvqa_val_v051_ocr.jsonl \
+    --image-folder ${EVAL}/textvqa/train_images \
+    --answers-file ${EVAL}/textvqa/answers/${CKPT_NAME}-${CONV}.jsonl \
+    --temperature 0 \
+    --conv-mode ${CONV}
+
+else
 CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240520/llava/Qwen/Qwen1.5-7B-Chat/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_qwen_debug
 CONV="qwen_1_5_v2"
 python -m llava.eval.model_vqa_loader_qwen \
@@ -133,6 +138,7 @@ python -m llava.eval.model_vqa_loader_qwen \
     --answers-file ${EVAL}/textvqa/answers/${CKPT_NAME}-${CONV}.jsonl \
     --temperature 0 \
     --conv-mode ${CONV}
+fi
 
 python -m llava.eval.eval_textvqa \
     --annotation-file ${EVAL}/textvqa/TextVQA_0.5.1_val.json \

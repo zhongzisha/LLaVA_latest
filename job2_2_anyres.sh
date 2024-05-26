@@ -43,10 +43,10 @@ lora_params=${10}
 conv_version=${11}
 
 if [ -z "${MY_DEBUG}" ]; then
-save_steps=1000
+save_steps=100
 num_train_epochs=1
 else
-save_steps=5
+save_steps=2
 num_train_epochs=1
 fi
 
@@ -153,13 +153,14 @@ torchrun \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     --logging_steps 1 \
-    --model_max_length 32768 \
+    --model_max_length 8192 \
     --gradient_checkpointing True \
     --dataloader_num_workers 2 \
     --lazy_preprocess True \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
-    --dataloader_drop_last True 
+    --dataloader_drop_last True \
+    --log_level debug
 
 
 
