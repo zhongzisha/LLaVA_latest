@@ -160,7 +160,8 @@ torchrun \
     --report_to tensorboard \
     --cache_dir ./cache_dir \
     --dataloader_drop_last True \
-    --log_level debug
+    --log_level debug \
+    2>&1 | tee log_zero3_offload_nvme_resume.txt
 
 
 
