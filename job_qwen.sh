@@ -4,12 +4,12 @@
 #SBATCh --mail-type=ALL
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=200G
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:4,lscratch:200
+#SBATCH --gres=gpu:a100:4,lscratch:400
 #SBATCH --time=200:00:00
-##SBATCH --exclusive
+#SBATCH --exclusive
 #SBATCH --output=%x-%j.out
 #SBATCH --export=ALL
 
@@ -119,10 +119,10 @@ fi
 
 wait
 echo "stage 1 done" 
-exit;
+# exit;
 
 
-
+if [ "0" == "1" ]; then
 ################### stage 2 #######################
 do_lora=0
 if [ ${do_lora} -eq 1 ]; then
@@ -181,8 +181,7 @@ if [ ! -e "${finetune_output_dir}/config.json" ]; then
 else
     echo "stage 2 already done"
 fi
-
-
+fi
 
 
 ################### stage 2 anyres #######################
@@ -200,7 +199,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     deepspeed_config=zero2
     atten_implementation=xformers    # no flash-attn
 else
-    per_device_train_batch_size=4
+    per_device_train_batch_size=1
     gradient_accumulation_steps=16
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
@@ -217,7 +216,9 @@ model_name_or_path=lmsys/vicuna-7b-v1.5
 conv_version=v1
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 conv_version=llava_llama_3_v2
-pretrain_output_dir=${DATA_ROOT}/temp_20240514/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+model_name_or_path=Qwen/Qwen1.5-7B-Chat
+conv_version=qwen_1_5_v2
+pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -226,7 +227,7 @@ LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
 
 if [ ! -e "${finetune_output_dir}/config.json" ]; then
     srun --export ALL --jobid $SLURM_JOB_ID \
-    bash job2_2_anyres.sh \
+    bash job2_2_anyres_qwen.sh \
     ${per_device_train_batch_size} \
     ${gradient_accumulation_steps} \
     ${learning_rate} \

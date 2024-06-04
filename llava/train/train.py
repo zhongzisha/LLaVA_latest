@@ -116,6 +116,7 @@ class TrainingArguments(transformers.TrainingArguments):
     freeze_mm_vision_resampler: bool = field(default=False)
     freeze_mm_vision_tower: bool = field(default=False)
     freeze_mm_mlp_adapter: bool = field(default=False)
+    unfreeze_mm_vision_tower: bool = field(default=False)
     mm_tunable_parts: Optional[str] = field(default="")
 
 def maybe_zero_3(param, ignore_status=False, name=None):
@@ -915,6 +916,22 @@ def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
                 data_collator=data_collator)
 
 
+def unfreeze_vit(vision_tower):
+    for _, p in vision_tower.named_parameters():
+        p.requires_grad = True
+
+
+def format_bytes(size):
+    billion = 10**9
+    million = 10**6
+
+    if size >= billion:
+        return f"{size / billion:.2f}B"
+    elif size >= million:
+        return f"{size / million:.2f}M"
+    else:
+        return f"{size} bytes"
+
 def train(attn_implementation=None):
     global local_rank
 
@@ -1077,6 +1094,23 @@ def train(attn_implementation=None):
         if training_args.freeze_mm_mlp_adapter:
             for p in model.get_model().mm_projector.parameters():
                 p.requires_grad = False
+
+        model.config.unfreeze_mm_vision_tower = training_args.unfreeze_mm_vision_tower
+        if training_args.unfreeze_mm_vision_tower:
+            lr_of_vit = training_args.mm_vision_tower_lr if training_args.mm_vision_tower_lr is not None else training_args.learning_rate
+            lr_of_mlp = training_args.mm_projector_lr if training_args.mm_projector_lr is not None else training_args.learning_rate
+            training_args.mm_projector_lr = lr_of_mlp
+            unfreeze_vit(vision_tower)
+            rank0_print(
+                f'Tune the entire model! The LR of ViT is {lr_of_vit}. The LR of MLP is {lr_of_mlp}. The LR of LLM is {training_args.learning_rate}')
+
+        # Calculate total parameters and trainable parameters
+        total_params = sum(p.numel() for p in model.get_model().parameters())
+        trainable_params = sum(
+            p.numel() for p in model.get_model().parameters() if p.requires_grad)
+
+        rank0_print(f"Total parameters: {format_bytes(total_params)}")
+        rank0_print(f"Trainable parameters: {format_bytes(trainable_params)}")
 
         if training_args.bits in [4, 8]:
             model.get_model().mm_projector.to(dtype=compute_dtype, device=training_args.device)

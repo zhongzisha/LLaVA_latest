@@ -4,12 +4,12 @@
 #SBATCh --mail-type=ALL
 #SBATCH --nodes=2
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=32
 #SBATCH --mem=100G
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:2,lscratch:200
+#SBATCH --gres=gpu:a100:4,lscratch:400
 #SBATCH --time=200:00:00
-##SBATCH --exclusive
+#SBATCH --exclusive
 #SBATCH --output=%x-%j.out
 #SBATCH --export=ALL
 
@@ -202,7 +202,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     atten_implementation=xformers    # no flash-attn
 else
     per_device_train_batch_size=4
-    gradient_accumulation_steps=8
+    gradient_accumulation_steps=4
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
@@ -235,7 +235,7 @@ if [ ! -e "${finetune_output_dir}/config.json" ]; then
     ${gradient_accumulation_steps} \
     ${learning_rate} \
     "${data_type_str}" \
-    "zero3_offload_nvme_llama3" \
+    "zero3" \
     ${atten_implementation} \
     ${model_name_or_path} \
     "${pretrain_output_dir}" \

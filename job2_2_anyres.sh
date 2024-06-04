@@ -123,7 +123,7 @@ torchrun \
     --tee 3 \
     llava/train/train_${atten_implementation}.py \
     ${lora_params} \
-    --deepspeed ./scripts/zero3_offload_nvme.json \
+    --deepspeed ./scripts/zero3.json \
     --model_name_or_path ${model_name_or_path} \
     --version ${conv_version} \
     --data_path ${FINETUNE_DATA} \
@@ -161,7 +161,7 @@ torchrun \
     --cache_dir ./cache_dir \
     --dataloader_drop_last True \
     --log_level debug \
-    2>&1 | tee log_zero3_offload_nvme_resume.txt
+    2>&1 | tee log_zero3_offload.txt
 
 
 
