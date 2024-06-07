@@ -57,7 +57,7 @@ if [ "${SLURM_JOB_NODELIST}" != "" ]; then
 else
     MASTER_ADDR=`hostname`
     NNODES=1
-    GPUS_PER_NODE=2
+    GPUS_PER_NODE=4
 fi
 MASTER_PORT=25199
 

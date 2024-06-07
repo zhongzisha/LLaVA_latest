@@ -2,12 +2,12 @@
 
 #SBATCH --job-name=debug
 #SBATCh --mail-type=ALL
-#SBATCH --nodes=2
+#SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1          # crucial - only 1 task per dist per node!
-#SBATCH --cpus-per-task=32
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=100G
 #SBATCH --partition=gpu
-#SBATCH --gres=gpu:a100:4,lscratch:400
+#SBATCH --gres=gpu:v100x:2,lscratch:400
 #SBATCH --time=200:00:00
 #SBATCH --exclusive
 #SBATCH --output=%x-%j.out
@@ -72,12 +72,12 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     atten_implementation=xformers    # no flash-attn
 else
     # a100
-    per_device_train_batch_size=4    # 
+    per_device_train_batch_size=2    # 
     gradient_accumulation_steps=8   # 4 gpus
     learning_rate=1e-3
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
-    atten_implementation=flash_attention_2  # a100
+    atten_implementation=xformers  # a100
 
     # # v100x
     # per_device_train_batch_size=1
@@ -95,6 +95,7 @@ model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 # model_name_or_path=BioMistral/BioMistral-7B
 # model_name_or_path=Qwen/Qwen1.5-7B-Chat
 pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240606/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
@@ -118,72 +119,8 @@ if [ ! -e "${pretrain_output_dir}/mm_projector.bin" ]; then
 fi
 
 wait
-echo "stage 1 done" 
-# exit;
-
-
-
-################### stage 2 #######################
-if [ "0" == "1" ]; then
-do_lora=0
-if [ ${do_lora} -eq 1 ]; then
-    lora_params="--lora_enable True --lora_r 128 --lora_alpha 256 --mm_projector_lr 2e-5"
-else
-    lora_params=""
-fi
-if [ "$CLUSTER_NAME" == "FRCE" ]; then
-    per_device_train_batch_size=1
-    gradient_accumulation_steps=32
-    learning_rate=5e-5
-    data_type_str="--bf16 False --fp16 True --tf32 False"
-    deepspeed_config=zero2
-    atten_implementation=eager    # no flash-attn
-else
-    per_device_train_batch_size=2
-    gradient_accumulation_steps=8
-    learning_rate=2e-5
-    data_type_str="--bf16 True --tf32 True"
-    deepspeed_config=zero3
-    atten_implementation=flash_attention_2
-fi
-model_name_or_path=microsoft/phi-2
-conv_version=phi
-# model_name_or_path=BioMistral/BioMistral-7B
-# conv_version=mistral
-model_name_or_path=meta-llama/Llama-2-7b-chat-hf
-conv_version=llava_llama_2
-model_name_or_path=lmsys/vicuna-7b-v1.5
-conv_version=v1
-model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
-conv_version=llava_llama_3
-pretrain_output_dir=${DATA_ROOT}/temp_20240512/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
-finetune_output_dir=${pretrain_output_dir}/finetune
-moe_output_dir=${finetune_output_dir}/moe
-mkdir -p ${moe_output_dir}
-NUM_CKPT_DIRS=$(find $finetune_output_dir -maxdepth 1 -type d -name "checkpoint-*" | wc -l)
-LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
-
-if [ ! -e "${finetune_output_dir}/config.json" ]; then
-    srun --export ALL --jobid $SLURM_JOB_ID \
-    bash job2_2.sh \
-    ${per_device_train_batch_size} \
-    ${gradient_accumulation_steps} \
-    ${learning_rate} \
-    "${data_type_str}" \
-    "zero3" \
-    ${atten_implementation} \
-    ${model_name_or_path} \
-    "${pretrain_output_dir}" \
-    "${finetune_output_dir}" \
-    "${lora_params}" \
-    ${conv_version} \
-    2>&1 | tee -a ${LOG_FILE}.stage2
-    echo "stage 2 done" 
-else
-    echo "stage 2 already done"
-fi
-fi
-
+echo "stage 1 done"  
+exit;
 
 
 ################### stage 2 anyres #######################
@@ -219,14 +156,12 @@ conv_version=v1
 model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 conv_version=llava_llama_3_v2
 pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240606/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
 NUM_CKPT_DIRS=$(find $finetune_output_dir -maxdepth 1 -type d -name "checkpoint-*" | wc -l)
 LOG_FILE=$finetune_output_dir/log$((NUM_CKPT_DIRS + 1)).txt
-
-mkdir -p $MYTMP_DIR/offload
-ln -sf $MYTMP_DIR/offload /home/zhongz2/offload_llama3
 
 if [ ! -e "${finetune_output_dir}/config.json" ]; then
     srun --export ALL --jobid $SLURM_JOB_ID \

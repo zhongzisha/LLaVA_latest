@@ -78,6 +78,7 @@ torchrun \
     --image_folder ${IMAGE_FOLDER} \
     --vision_tower openai/clip-vit-large-patch14-336 \
     --pretrain_mm_mlp_adapter ${pretrain_output_dir}/mm_projector.bin \
+    --unfreeze_mm_vision_tower True \
     --mm_vision_select_layer -2 \
     --mm_use_im_start_end False \
     --mm_use_im_patch_token False \
@@ -96,7 +97,8 @@ torchrun \
     --save_strategy "steps" \
     --save_steps ${save_steps} \
     --save_total_limit 1 \
-    --learning_rate ${learning_rate}\
+    --learning_rate ${learning_rate} \
+    --mm_vision_tower_lr 2e-6 \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \

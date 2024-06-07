@@ -209,7 +209,7 @@ class LLaVATrainer(Trainer):
                             "lr": self.args.mm_projector_lr,
                         },
                     ]
-                else:
+                else: 
                     optimizer_grouped_parameters = [
                         {
                             "params": [
