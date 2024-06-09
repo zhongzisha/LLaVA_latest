@@ -113,7 +113,7 @@ torchrun \
 
 exit;
 
-
+# 20240609 learn some biomedical data analysis
 
 torchrun \
     --nproc_per_node $GPUS_PER_NODE \
