@@ -139,7 +139,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     atten_implementation=xformers    # no flash-attn
 else
     per_device_train_batch_size=4
-    gradient_accumulation_steps=4
+    gradient_accumulation_steps=8
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
