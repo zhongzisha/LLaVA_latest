@@ -606,7 +606,56 @@ if False:
 
 
 
+def test_ITQ():
 
+    import matplotlib.pyplot as plt
 
+    # unused but required import for doing 3d projections with matplotlib < 3.2
+    import mpl_toolkits.mplot3d  # noqa: F401
+    import numpy as np
 
+    from sklearn import datasets, decomposition, preprocessing
+    import torch
 
+    np.random.seed(5)
+
+    iris = datasets.load_breast_cancer()
+    X = iris.data
+    y = iris.target
+
+    scaler = preprocessing.StandardScaler(with_std=False)
+    scaler.fit(X)
+    X = scaler.transform(X)
+
+    code_length = 8
+    pca = decomposition.PCA(n_components=code_length)
+    pca.fit(X)
+    X_pca = pca.transform(X).astype(np.float64)
+    V = torch.from_numpy(X_pca)
+
+    R = torch.randn(code_length, code_length).to(torch.float64)
+    [U, _, _] = torch.svd(R)
+    R = U[:, :code_length] 
+
+    max_iter = 20
+    R1 = R.clone()
+    for i in range(max_iter):
+        V_tilde = V @ R1
+        B = V_tilde.sign()
+        [U, D, VT] = torch.svd(B.t() @ V)
+        R1 = (VT.t() @ U.t())
+        loss = torch.norm(B-V@R1)
+        print(i, loss)
+
+    R2 = R.clone()
+    for i in range(max_iter):
+        V_tilde = V @ R2
+        B = V_tilde.sign()
+        S = V.t() @ B
+        SST = S @ S.t()
+        STS = S.t() @ S
+        [U1, D1, V1T] = torch.svd(SST)
+        [U2, D2, V2T] = torch.svd(STS)
+        R2 = U1@U2.t() 
+        loss = torch.norm(B-V@R2)
+        print(i, loss)

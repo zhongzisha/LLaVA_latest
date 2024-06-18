@@ -138,8 +138,8 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
     deepspeed_config=zero2
     atten_implementation=xformers    # no flash-attn
 else
-    per_device_train_batch_size=4
-    gradient_accumulation_steps=8
+    per_device_train_batch_size=2
+    gradient_accumulation_steps=16
     learning_rate=2e-5
     data_type_str="--bf16 True --tf32 True"
     deepspeed_config=zero3
@@ -157,6 +157,7 @@ model_name_or_path=meta-llama/Meta-Llama-3-8B-Instruct
 conv_version=llava_llama_3_v2
 pretrain_output_dir=${DATA_ROOT}/temp_20240516/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 pretrain_output_dir=${DATA_ROOT}/temp_20240606/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
+pretrain_output_dir=${DATA_ROOT}/temp_20240618/llava${MY_DEBUG}/${model_name_or_path}/llava-pretrain-${deepspeed_config}-${atten_implementation}-${LORA_POSTFIX}
 finetune_output_dir=${pretrain_output_dir}/finetune_anyres
 moe_output_dir=${finetune_output_dir}/moe
 mkdir -p ${moe_output_dir}
