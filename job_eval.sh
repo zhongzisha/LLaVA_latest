@@ -121,6 +121,7 @@ if [ "${TYPE}" == "llama3" ]; then
 CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240520/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_llama_debug
 CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240516/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/llava_llama3_debug
 CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240606/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/finetune_anyres/llava_llama3_debug
+CKPT_NAME=/data/zhongz2/data/LLaVA-Med/video/temp_20240618/llava/meta-llama/Meta-Llama-3-8B-Instruct/llava-pretrain-zero3-flash_attention_2-/llava_llama3_debug
 CONV="llava_llama_3_v2"
 python -m llava.eval.model_vqa_loader_llama3 \
     --model-path ${CKPT_NAME} \
