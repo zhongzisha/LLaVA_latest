@@ -37,7 +37,13 @@ class DataArguments:
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
     image_crop_resolution: int = 224
-from transformers import TrainingArguments
+
+@dataclass
+class ModelArguments:
+    model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
+    conv_version: Optional[str] = field(default="plain")
+    pretrain_ckpt_path: Optional[str] = field(default="./pytorch_model.bin")
+
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
@@ -839,9 +845,9 @@ torchrun \
     --bf16 True --tf32 True \
     --output_dir /lscratch/$SLURM_JOB_ID/output \
     --num_train_epochs 1 \
-    --per_device_train_batch_size 16 \
+    --per_device_train_batch_size 32 \
     --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 8 \
+    --gradient_accumulation_steps 4 \
     --eval_strategy "no" \
     --save_strategy "steps" \
     --save_steps 10 \
@@ -850,9 +856,8 @@ torchrun \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
-    --logging_steps 2 \
-    --dataloader_num_workers 2 \
-    --lazy_preprocess True \
+    --logging_steps 1 \
+    --dataloader_num_workers 8 \
     --report_to tensorboard \
     --cache_dir /data/zhongz2/data/cache_dir \
     --dataloader_drop_last True \
@@ -865,14 +870,9 @@ if __name__ == '__main__':
     model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
     model_max_length = 8192
 
-    parser = transformers.HfArgumentParser((DataArguments, TrainingArguments))
-    data_args, training_args = parser.parse_args_into_dataclasses()
+    parser = transformers.HfArgumentParser((DataArguments, ModelArguments, TrainingArguments))
+    data_args, model_args, training_args = parser.parse_args_into_dataclasses()
     
-    print('data_args args')
-    print(data_args)
-    print('training args')
-    print(training_args)
-
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -884,31 +884,36 @@ if __name__ == '__main__':
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
 
-    conv_llava_plain = Conversation(
-        system="",
-        roles=("", ""),
-        messages=[],
-        offset=0,
-        sep_style=SeparatorStyle.PLAIN,
-        sep="\n",
-    )
-
-    conv_llava_llama_3_v2 = Conversation(
-        system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
-        roles=("user", "assistant"),
-        version="llama_v3_v2",
-        messages=[],
-        offset=0,
-        sep_style=SeparatorStyle.LLAMA_3,
-        stop_token_ids=[128009],
-        sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
-        sep2='<|start_header_id|>user<|end_header_id|>\n\n'
-    )
-
+    if model_args.conv_version == 'plain':  # for pretrain
+        conv_llava = Conversation(
+            system="",
+            roles=("", ""),
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.PLAIN,
+            sep="\n",
+        )
+    elif model_args.conv_version == 'llama_3': # for fine tune
+        conv_llava = Conversation(
+            system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+            roles=("user", "assistant"),
+            version="llama_v3_v2",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
+    else:
+        raise ValueError("wrong conv_version")
 
     model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, cache_dir=training_args.cache_dir)
     model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16)
-    model.tune_projector_only()
+    if model_args.conv_version == 'plain':
+        model.tune_projector_only()
+    else:
+        model.load_state_dict(torch.load(pretrain_ckpt_path))
     model.to(training_args.device)
 
     if training_args.gradient_checkpointing:
@@ -922,7 +927,7 @@ if __name__ == '__main__':
 
     data_args.image_processor = model.image_processor
     data_args.is_multimodal = True
-    data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava_plain, data_args=data_args)
+    data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
 
     model.config.use_cache = False
     model.config.tokenizer_model_max_length = tokenizer.model_max_length
@@ -939,3 +944,17 @@ if __name__ == '__main__':
     trainer.save_state()
 
     model.config.use_cache = True
+
+
+
+
+
+
+
+
+
+
+
+
+
+
