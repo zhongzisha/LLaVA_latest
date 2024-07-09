@@ -1,0 +1,941 @@
+import os, re, copy, json, base64, io
+from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
+import numpy as np
+from PIL import Image
+from dataclasses import dataclass, field
+from enum import auto, Enum
+import pathlib
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, Sampler
+
+import transformers
+from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig
+from transformers import LlamaModel, LlamaForCausalLM, AutoTokenizer 
+from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
+from transformers import Trainer
+from transformers.trainer import has_length
+from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.generation.utils import GenerateOutput
+
+
+# Model Constants
+IGNORE_INDEX = -100
+IMAGE_TOKEN_INDEX = -200
+DEFAULT_IMAGE_TOKEN = "<image>"
+DEFAULT_IMAGE_PATCH_TOKEN = "<im_patch>"
+DEFAULT_IM_START_TOKEN = "<im_start>"
+DEFAULT_IM_END_TOKEN = "<im_end>"
+
+
+@dataclass
+class DataArguments:
+    data_path: Optional[List[str]] = field(default=None, metadata={"help": "Path to the training data."})
+    lazy_preprocess: bool = False
+    is_multimodal: bool = False
+    image_folder: Optional[str] = field(default=None)
+    image_aspect_ratio: str = 'square'
+    image_crop_resolution: int = 224
+from transformers import TrainingArguments
+@dataclass
+class TrainingArguments(transformers.TrainingArguments):
+    cache_dir: Optional[str] = field(default=None)
+    group_by_modality_length: bool = field(default=False)    
+    remove_unused_columns: bool = field(default=False)
+
+
+
+class SeparatorStyle(Enum):
+    """Different separator style."""
+    SINGLE = auto()
+    TWO = auto()
+    PLAIN = auto()
+    LLAMA_3 = auto()
+
+
+@dataclass
+class Conversation:
+    """A class that keeps all conversation history."""
+    system: str
+    roles: List[str]
+    messages: List[List[str]]
+    offset: int
+    sep_style: SeparatorStyle = SeparatorStyle.SINGLE
+    sep: str = "###"
+    sep2: str = None
+    version: str = "Unknown"
+    # Stop criteria (the default one is EOS token)
+    stop_str: Union[str, List[str]] = None
+    # Stops generation if meeting any token in this list
+    stop_token_ids: List[int] = None
+
+    skip_next: bool = False
+
+    def dict(self):
+        if len(self.get_images()) > 0:
+            return {
+                "system": self.system,
+                "roles": self.roles,
+                "messages": [[x, y[0] if type(y) is tuple else y] for x, y in self.messages],
+                "offset": self.offset,
+                "sep": self.sep,
+                "sep2": self.sep2,
+            }
+        return {
+            "system": self.system,
+            "roles": self.roles,
+            "messages": self.messages,
+            "offset": self.offset,
+            "sep": self.sep,
+            "sep2": self.sep2,
+        }
+
+
+def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+    prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split("<image>")]
+
+    def insert_separator(X, sep):
+        return [ele for sublist in zip(X, [sep] * len(X)) for ele in sublist][:-1]
+
+    input_ids = []
+    offset = 0
+    if len(prompt_chunks) > 0 and len(prompt_chunks[0]) > 0 and prompt_chunks[0][0] == tokenizer.bos_token_id:
+        offset = 1
+        input_ids.append(prompt_chunks[0][0])
+
+    for x in insert_separator(prompt_chunks, [image_token_index] * (offset + 1)):
+        input_ids.extend(x[offset:])
+
+    if return_tensors is not None:
+        if return_tensors == "pt":
+            return torch.tensor(input_ids, dtype=torch.long)
+        raise ValueError(f"Unsupported tensor type: {return_tensors}")
+    return input_ids
+
+
+def preprocess_plain(
+    sources: Sequence[str], 
+    tokenizer: transformers.PreTrainedTokenizer,
+) -> Dict:
+    conversations = []
+    for source in sources:
+        assert len(source) == 2
+        assert DEFAULT_IMAGE_TOKEN in source[0]['value']
+        source[0]['value'] = DEFAULT_IMAGE_TOKEN 
+        conversations.append(source[0]['value'] + source[1]['value'] + '\n')
+    # tokenize conversations
+    input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    targets = copy.deepcopy(input_ids)
+    for target, source in zip(targets, sources):
+        tokenized_len = len(tokenizer_image_token(source[0]['value'], tokenizer))
+        target[:tokenized_len] = IGNORE_INDEX
+
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+    
+    return dict(input_ids=input_ids, labels=targets)
+
+
+def preprocess_llama_3(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    conversation: Conversation,
+    has_image: bool = False
+) -> Dict:
+    conv = conversation
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        messages = [{'role': 'system', 'content': conv.system}]
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            messages.append({'role': role, 'content': sentence["value"]})
+        conversations.append(
+            tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            ))
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+    targets = input_ids.clone()
+
+    # Mask targets 
+    # sep = conv.sep + conv.roles[1] + ": "
+    for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep)
+        cur_len = 0 
+        target[:] = IGNORE_INDEX
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+            
+            parts = rou.split(conv.sep2)
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
+            if i!=0:
+                rou_len -= 1
+            else:
+                cur_len += rou_len
+                continue
+
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+            target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
+
+            cur_len += rou_len    
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+                
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
+
+
+def preprocess(
+    sources: Sequence[str],
+    tokenizer: transformers.PreTrainedTokenizer,
+    conversation: Conversation,
+    has_image: bool = False
+) -> Dict:
+    """
+    Given a list of sources, each is a conversation list. This transform:
+    1. Add signal '### ' at the beginning each sentence, with end signal '\n';
+    2. Concatenate conversations together;
+    3. Tokenize the concatenated conversation;
+    4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
+    """
+    if conversation.sep_style == SeparatorStyle.PLAIN:
+        return preprocess_plain(sources, tokenizer)
+    if conversation.sep_style == SeparatorStyle.LLAMA_3:
+        return preprocess_llama_3(sources, tokenizer, conversation=conversation, has_image=has_image)
+
+    # add end signal and concatenate together
+    conversations = []
+    for source in sources:
+        header = f"{conversation.system}\n\n"
+        conversation = _add_speaker_and_signal(header, source)
+        conversations.append(conversation)
+    # tokenize conversations
+    def get_tokenize_len(prompts):
+        return [len(tokenizer_image_token(prompt, tokenizer)) for prompt in prompts]
+
+    if has_image:
+        input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations]
+    else:
+        conversations_tokenized = _tokenize_fn(conversations, tokenizer)
+        input_ids = conversations_tokenized["input_ids"]
+
+    targets = copy.deepcopy(input_ids)
+    for target, source in zip(targets, sources):
+        if has_image:
+            tokenized_lens = get_tokenize_len([header] + [s["value"] for s in source])
+        else:
+            tokenized_lens = _tokenize_fn([header] + [s["value"] for s in source], tokenizer)["input_ids_lens"]
+        speakers = [sentence["from"] for sentence in source]
+        _mask_targets(target, tokenized_lens, speakers)
+
+    return dict(input_ids=input_ids, labels=targets)
+
+
+def preprocess_multimodal(
+    sources: Sequence[str],
+    data_args: DataArguments
+) -> Dict:
+    is_multimodal = data_args.is_multimodal
+    if not is_multimodal:
+        return sources
+
+    for source in sources:
+        for sentence in source:
+            if DEFAULT_IMAGE_TOKEN in sentence['value']:
+                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                sentence['value'] = sentence['value'].strip()
+
+    return sources
+
+
+class LazySupervisedDataset(Dataset):
+    """Dataset for supervised fine-tuning."""
+
+    def __init__(self,
+                 tokenizer: transformers.PreTrainedTokenizer,
+                 conversation: Conversation,
+                 data_args: DataArguments):
+        super(LazySupervisedDataset, self).__init__()
+        # ================================================
+        list_data_dict = []
+        for data in data_args.data_path:
+            data = json.load(open(data, "r"))
+            for i in data:
+                i['id'] = len(list_data_dict)
+                list_data_dict.append(i)
+        # ================================================
+        self.tokenizer = tokenizer
+        self.conversation = conversation
+        self.list_data_dict = list_data_dict
+        self.data_args = data_args
+
+    def __len__(self):
+        return len(self.list_data_dict)
+
+    @property
+    def lengths(self):
+        length_list = []
+        for sample in self.list_data_dict:
+            img_tokens = 128 if 'image' in sample else 0
+            length_list.append(sum(len(conv['value'].split()) for conv in sample['conversations']) + img_tokens)
+        return length_list
+
+    @property
+    def modality_lengths(self):
+        length_list = []
+        for sample in self.list_data_dict:
+            cur_len = sum(len(conv['value'].split()) for conv in sample['conversations'])
+            cur_len = cur_len if 'image' in sample else -cur_len
+            length_list.append(cur_len)
+        return length_list
+
+    def __getitem__(self, i) -> Dict[str, torch.Tensor]:
+        sources = self.list_data_dict[i]
+        if isinstance(i, int):
+            sources = [sources]
+        assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
+        if 'image' in sources[0]:
+            image_file = self.list_data_dict[i]['image']
+            image_folder = self.data_args.image_folder
+            processor = self.data_args.image_processor
+            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            image_size = image.size
+            
+            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+
+            sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
+        else:
+            sources = copy.deepcopy([e["conversations"] for e in sources])
+        
+        data_dict = preprocess(sources, self.tokenizer, self.conversation, has_image=('image' in self.list_data_dict[i]))
+
+        if isinstance(i, int):
+            data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
+
+        # image exist in the data
+        if 'image' in self.list_data_dict[i]:
+            data_dict['image'] = image
+            data_dict['image_size'] = image_size 
+
+        elif self.data_args.is_multimodal:
+            # image does not exist in the data, but the model is multimodal
+            crop_size = self.data_args.image_processor.crop_size
+            data_dict['image'] = torch.zeros(3, crop_size['height'], crop_size['width'])
+            data_dict['image_size'] = (crop_size['width'], crop_size['height']) 
+
+        return data_dict
+
+
+@dataclass
+class DataCollatorForSupervisedDataset(object):
+    """Collate examples for supervised fine-tuning."""
+
+    tokenizer: transformers.PreTrainedTokenizer
+
+    def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
+        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids = torch.nn.utils.rnn.pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
+        labels = torch.nn.utils.rnn.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
+        input_ids = input_ids[:, :self.tokenizer.model_max_length]
+        labels = labels[:, :self.tokenizer.model_max_length]
+        batch = dict(input_ids=input_ids, labels=labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id))
+
+        if 'image' in instances[0]:
+            images = [instance['image'] for instance in instances]
+            image_sizes = [instance['image_size'] for instance in instances]
+            if all(x is not None and x.shape == images[0].shape for x in images):
+                batch['images'] = torch.stack(images)
+            else:
+                batch['images'] = images
+            batch['image_sizes'] = image_sizes
+
+        return batch
+
+
+
+def make_supervised_data_module(tokenizer: transformers.PreTrainedTokenizer,
+                                conversation: Conversation,
+                                data_args: DataArguments) -> Dict:
+    """Make dataset and collator for supervised fine-tuning."""
+    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, conversation=conversation, data_args=data_args)
+    data_collator = DataCollatorForSupervisedDataset(tokenizer=tokenizer)
+    return dict(train_dataset=train_dataset,
+                eval_dataset=None,
+                data_collator=data_collator)
+
+
+
+
+def split_to_even_chunks(indices, lengths, num_chunks):
+    """
+    Split a list of indices into `chunks` chunks of roughly equal lengths.
+    """
+
+    if len(indices) % num_chunks != 0:
+        return [indices[i::num_chunks] for i in range(num_chunks)]
+
+    num_indices_per_chunk = len(indices) // num_chunks
+
+    chunks = [[] for _ in range(num_chunks)]
+    chunks_lengths = [0 for _ in range(num_chunks)]
+    for index in indices:
+        shortest_chunk = chunks_lengths.index(min(chunks_lengths))
+        chunks[shortest_chunk].append(index)
+        chunks_lengths[shortest_chunk] += lengths[index]
+        if len(chunks[shortest_chunk]) == num_indices_per_chunk:
+            chunks_lengths[shortest_chunk] = float("inf")
+
+    return chunks
+
+
+def get_modality_length_grouped_indices(lengths, batch_size, world_size, generator=None):
+    # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
+    assert all(l != 0 for l in lengths), "Should not have zero length."
+    if all(l > 0 for l in lengths) or all(l < 0 for l in lengths):
+        # all samples are in the same modality
+        return get_length_grouped_indices(lengths, batch_size, world_size, generator=generator)
+    mm_indices, mm_lengths = zip(*[(i, l) for i, l in enumerate(lengths) if l > 0])
+    lang_indices, lang_lengths = zip(*[(i, -l) for i, l in enumerate(lengths) if l < 0])
+
+    mm_shuffle = [mm_indices[i] for i in get_length_grouped_indices(mm_lengths, batch_size, world_size, generator=None)]
+    lang_shuffle = [lang_indices[i] for i in get_length_grouped_indices(lang_lengths, batch_size, world_size, generator=None)]
+    megabatch_size = world_size * batch_size
+    mm_megabatches = [mm_shuffle[i : i + megabatch_size] for i in range(0, len(mm_shuffle), megabatch_size)]
+    lang_megabatches = [lang_shuffle[i : i + megabatch_size] for i in range(0, len(lang_shuffle), megabatch_size)]
+
+    last_mm = mm_megabatches[-1]
+    last_lang = lang_megabatches[-1]
+    additional_batch = last_mm + last_lang
+    megabatches = mm_megabatches[:-1] + lang_megabatches[:-1]
+    megabatch_indices = torch.randperm(len(megabatches), generator=generator)
+    megabatches = [megabatches[i] for i in megabatch_indices]
+
+    if len(additional_batch) > 0:
+        megabatches.append(sorted(additional_batch))
+
+    return [i for megabatch in megabatches for i in megabatch]
+
+
+def get_length_grouped_indices(lengths, batch_size, world_size, generator=None, merge=True):
+    # We need to use torch for the random part as a distributed sampler will set the random seed for torch.
+    indices = torch.randperm(len(lengths), generator=generator)
+    megabatch_size = world_size * batch_size
+    megabatches = [indices[i : i + megabatch_size].tolist() for i in range(0, len(lengths), megabatch_size)]
+    megabatches = [sorted(megabatch, key=lambda i: lengths[i], reverse=True) for megabatch in megabatches]
+    megabatches = [split_to_even_chunks(megabatch, lengths, world_size) for megabatch in megabatches]
+
+    return [i for megabatch in megabatches for batch in megabatch for i in batch]
+
+
+class LengthGroupedSampler(Sampler):
+    r"""
+    Sampler that samples indices in a way that groups together features of the dataset of roughly the same length while
+    keeping a bit of randomness.
+    """
+
+    def __init__(
+        self,
+        batch_size: int,
+        world_size: int,
+        lengths: Optional[List[int]] = None,
+        generator=None,
+        group_by_modality: bool = False,
+    ):
+        if lengths is None:
+            raise ValueError("Lengths must be provided.")
+
+        self.batch_size = batch_size
+        self.world_size = world_size
+        self.lengths = lengths
+        self.generator = generator
+        self.group_by_modality = group_by_modality
+
+    def __len__(self):
+        return len(self.lengths)
+
+    def __iter__(self):
+        if self.group_by_modality:
+            indices = get_modality_length_grouped_indices(self.lengths, self.batch_size, self.world_size, generator=self.generator)
+        else:
+            indices = get_length_grouped_indices(self.lengths, self.batch_size, self.world_size, generator=self.generator)
+        return iter(indices)
+
+
+class LLaVATrainer(Trainer):
+
+    def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
+        if self.train_dataset is None or not has_length(self.train_dataset):
+            return None
+
+        if self.args.group_by_modality_length:
+            lengths = self.train_dataset.modality_lengths
+            return LengthGroupedSampler(
+                self.args.train_batch_size,
+                world_size=self.args.world_size * self.args.gradient_accumulation_steps,
+                lengths=lengths,
+                group_by_modality=True,
+            )
+        else:
+            return super()._get_train_sampler()
+
+
+def unpad_image(tensor, original_size):
+    """
+    Unpads a PyTorch tensor of a padded and resized image.
+
+    Args:
+    tensor (torch.Tensor): The image tensor, assumed to be in CxHxW format.
+    original_size (tuple): The original size of the image (height, width).
+
+    Returns:
+    torch.Tensor: The unpadded image tensor.
+    """
+    original_width, original_height = original_size
+    current_height, current_width = tensor.shape[1:]
+
+    # Compute aspect ratios
+    original_aspect_ratio = original_width / original_height
+    current_aspect_ratio = current_width / current_height
+
+    # Determine padding size and direction
+    if original_aspect_ratio > current_aspect_ratio:
+        # Padding was added to the height
+        scale_factor = current_width / original_width
+        new_height = int(original_height * scale_factor)
+        padding = (current_height - new_height) // 2
+        unpadded_tensor = tensor[:, padding : current_height - padding, :]
+    else:
+        # Padding was added to the width
+        scale_factor = current_height / original_height
+        new_width = int(original_width * scale_factor)
+        padding = (current_width - new_width) // 2
+        unpadded_tensor = tensor[:, :, padding : current_width - padding]
+
+    return unpadded_tensor
+
+
+class DebugLlavaConfig(LlamaConfig):
+    model_type = "debug_llava"
+    temperature: float = 0.0  # reset to 0.0, previously 0.9 for Vicuna
+    max_new_tokens: int = 1024
+    do_sample: bool = False
+    top_p: Optional[float] = None
+    rope_scaling: Optional[dict] = {}
+
+
+class DebugLlavaForCausalLM(LlamaForCausalLM):
+    config_class = DebugLlavaConfig
+
+    def __init__(self, config):
+        super().__init__(config) 
+
+    def initialize_vision_modules(self, device="auto", dtype=torch.bfloat16):
+        vision_tower_name_or_ckpt = 'openai/clip-vit-large-patch14-336'
+        self.image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name_or_ckpt)
+        self.vision_tower = CLIPVisionModel.from_pretrained(vision_tower_name_or_ckpt).to(device=device, dtype=dtype)
+
+        self.mm_projector = nn.Linear(self.vision_tower.config.hidden_size, self.config.hidden_size, device=device, dtype=dtype)
+
+        self.num_patches_per_side = self.vision_tower.config.image_size // self.vision_tower.config.patch_size
+
+        embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=dtype))
+        self.image_newline = nn.Parameter(torch.randn(self.config.hidden_size, dtype=dtype, device=device) * embed_std)
+
+    def tune_projector_only(self):
+        self.model.requires_grad_(False)
+        self.vision_tower.requires_grad_(False)
+        for p in self.mm_projector.parameters():
+            p.requires_grad = True
+
+    def encode_images(self, images):
+        vision_tower_outputs = self.vision_tower(images, output_hidden_states=True) 
+        image_features = vision_tower_outputs.hidden_states[-2][:, 1:]
+        image_features = self.mm_projector(image_features)
+        return image_features
+
+    def prepare_inputs_labels_for_multimodal(self, input_ids, position_ids, attention_mask, past_key_values, labels, images, image_sizes=None):
+        if images is None or input_ids.shape[1] == 1:
+            return input_ids, position_ids, attention_mask, past_key_values, None, labels
+
+        if type(images) is list or images.ndim == 5:
+
+            if type(images) is list:
+                images = [x.unsqueeze(0) if x.ndim == 3 else x for x in images]
+            
+            concat_images = torch.cat([image for image in images], dim=0)
+            image_features = self.encode_images(concat_images)
+            split_sizes = [image.shape[0] for image in images]
+            image_features = torch.split(image_features, split_sizes, dim=0)
+
+            new_image_features = []
+            for image_idx, image_feature in enumerate(image_features):
+                # FIXME: now assume the image is square, and split to 2x2 patches
+                # num_patches = h * w, where h = w = sqrt(num_patches)
+                # currently image_feature is a tensor of shape (4, num_patches, hidden_size)
+                # we want to first unflatten it to (2, 2, h, w, hidden_size)
+
+                if image_feature.shape[0] > 1:
+                    base_image_feature = image_feature[0]
+                    image_feature = image_feature[1:]
+                    height = width = self.num_patches_per_side
+                    assert height * width == base_image_feature.shape[0]
+                    
+                    image_feature = image_feature.view(2, 2, height, width, -1)
+
+                    image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
+                    image_feature = image_feature.flatten(1, 2).flatten(2, 3)
+                    image_feature = unpad_image(image_feature, image_sizes[image_idx])
+                    image_feature = torch.cat((image_feature, self.image_newline[:, None, None].expand(*image_feature.shape[:-1], 1).to(image_feature.device)), dim=-1)
+                    image_feature = image_feature.flatten(1, 2).transpose(0, 1)
+                    
+                    image_feature = torch.cat((base_image_feature, image_feature), dim=0)
+                else:
+                    image_feature = image_feature[0]
+                    image_feature = torch.cat((image_feature, self.image_newline[None]), dim=0)
+
+                new_image_features.append(image_feature)
+
+            image_features = new_image_features
+
+        else:
+            image_features = self.encode_images(images)
+
+        # Let's just add dummy tensors if they do not exist,
+        # it is a headache to deal with None all the time.
+        # But it is not ideal, and if you have a better idea,
+        # please open an issue / submit a PR, thanks.
+        _labels = labels
+        _position_ids = position_ids
+        _attention_mask = attention_mask
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+        else:
+            attention_mask = attention_mask.bool()
+        if position_ids is None:
+            position_ids = torch.arange(0, input_ids.shape[1], dtype=torch.long, device=input_ids.device)
+        if labels is None:
+            labels = torch.full_like(input_ids, IGNORE_INDEX)
+
+        # remove the padding using attention_mask  FIXME
+        _input_ids = input_ids
+        input_ids = [cur_input_ids[cur_attention_mask] for cur_input_ids, cur_attention_mask in zip(input_ids, attention_mask)]
+        labels = [cur_labels[cur_attention_mask] for cur_labels, cur_attention_mask in zip(labels, attention_mask)]
+
+        new_input_embeds = []
+        new_labels = []
+        cur_image_idx = 0
+        for batch_idx, cur_input_ids in enumerate(input_ids):
+            num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
+            if num_images == 0:
+                cur_image_features = image_features[cur_image_idx]
+                cur_input_embeds_1 = self.model.embed_tokens(cur_input_ids)
+                cur_input_embeds = torch.cat([cur_input_embeds_1, cur_image_features[0:0]], dim=0)
+                new_input_embeds.append(cur_input_embeds)
+                new_labels.append(labels[batch_idx])
+                cur_image_idx += 1
+                continue
+
+            image_token_indices = [-1] + torch.where(cur_input_ids == IMAGE_TOKEN_INDEX)[0].tolist() + [cur_input_ids.shape[0]]
+            cur_input_ids_noim = []
+            cur_labels = labels[batch_idx]
+            cur_labels_noim = []
+            for i in range(len(image_token_indices) - 1):
+                cur_input_ids_noim.append(cur_input_ids[image_token_indices[i] + 1 : image_token_indices[i + 1]])
+                cur_labels_noim.append(cur_labels[image_token_indices[i] + 1 : image_token_indices[i + 1]])
+            split_sizes = [x.shape[0] for x in cur_labels_noim]
+            cur_input_embeds = self.model.embed_tokens(torch.cat(cur_input_ids_noim))
+            cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
+            cur_new_input_embeds = []
+            cur_new_labels = []
+
+            for i in range(num_images + 1):
+                cur_new_input_embeds.append(cur_input_embeds_no_im[i])
+                cur_new_labels.append(cur_labels_noim[i])
+                if i < num_images:
+                    cur_image_features = image_features[cur_image_idx]
+                    cur_image_idx += 1
+                    cur_new_input_embeds.append(cur_image_features)
+                    cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
+
+            cur_new_input_embeds = [x.to(self.device) for x in cur_new_input_embeds]
+
+            cur_new_input_embeds = torch.cat(cur_new_input_embeds)
+            cur_new_labels = torch.cat(cur_new_labels)
+
+            new_input_embeds.append(cur_new_input_embeds)
+            new_labels.append(cur_new_labels)
+
+        # Truncate sequences to max length as image embeddings can make the sequence longer
+        tokenizer_model_max_length = getattr(self.config, "tokenizer_model_max_length", None)
+        if tokenizer_model_max_length is not None:
+            new_input_embeds = [x[:tokenizer_model_max_length] for x in new_input_embeds]
+            new_labels = [x[:tokenizer_model_max_length] for x in new_labels]
+
+        # Combine them
+        max_len = max(x.shape[0] for x in new_input_embeds)
+        batch_size = len(new_input_embeds)
+
+        new_input_embeds_padded = []
+        new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
+        attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
+        position_ids = torch.zeros((batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device)
+
+        for i, (cur_new_embed, cur_new_labels) in enumerate(zip(new_input_embeds, new_labels)):
+            cur_len = cur_new_embed.shape[0]
+            if getattr(self.config, "tokenizer_padding_side", "right") == "left":
+                new_input_embeds_padded.append(torch.cat((torch.zeros((max_len - cur_len, cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device), cur_new_embed), dim=0))
+                if cur_len > 0:
+                    new_labels_padded[i, -cur_len:] = cur_new_labels
+                    attention_mask[i, -cur_len:] = True
+                    position_ids[i, -cur_len:] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+            else:
+                new_input_embeds_padded.append(torch.cat((cur_new_embed, torch.zeros((max_len - cur_len, cur_new_embed.shape[1]), dtype=cur_new_embed.dtype, device=cur_new_embed.device)), dim=0))
+                if cur_len > 0:
+                    new_labels_padded[i, :cur_len] = cur_new_labels
+                    attention_mask[i, :cur_len] = True
+                    position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
+
+        new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
+
+        if _labels is None:
+            new_labels = None
+        else:
+            new_labels = new_labels_padded
+
+        if _attention_mask is None:
+            attention_mask = None
+        else:
+            attention_mask = attention_mask.to(dtype=_attention_mask.dtype)
+
+        if _position_ids is None:
+            position_ids = None
+
+        return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
+
+
+    def forward(
+        self,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        images: Optional[torch.FloatTensor] = None,
+        image_sizes: Optional[List[List[int]]] = None,
+        return_dict: Optional[bool] = None,
+        cache_position=None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+
+        if inputs_embeds is None:
+            (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = \
+                self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, image_sizes)
+
+        return super().forward(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=inputs_embeds,
+            labels=labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+AutoConfig.register("debug_llava", DebugLlavaConfig)
+AutoModelForCausalLM.register(DebugLlavaConfig, DebugLlavaForCausalLM)
+
+
+def debug():
+    batch_size = 2
+    images = []
+    for i in range(batch_size):
+        images.append(Image.fromarray(np.random.randint(low=0, high=255, size=(256, 256, 3), dtype=np.uint8)))
+
+    device_map = "auto"
+    vision_tower_name_or_ckpt = 'openai/clip-vit-large-patch14-336'
+    image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name_or_ckpt)
+    vision_tower = CLIPVisionModel.from_pretrained(vision_tower_name_or_ckpt, device_map=device_map)
+
+    device = vision_tower.device
+
+    inputs = image_processor(images=images, return_tensors="pt")
+    # dict_keys(['pixel_values'])
+
+    image_forward_outs = vision_tower(inputs['pixel_values'].to(device=device), output_hidden_states=True)
+    # dict_keys(['last_hidden_state', 'pooler_output', 'hidden_states'])
+
+    image_features = image_forward_outs.hidden_states[-2][:, 1:]
+    # torch.Size([2, 576, 1024])
+
+    hidden_size = vision_tower.config.hidden_size
+    # 1024
+
+    mm_projector = nn.Linear(hidden_size, hidden_size)
+    mm_projector.to(device)
+
+    image_features_projected = mm_projector(image_features)
+
+"""
+NNODES=1
+GPUS_PER_NODE=2
+MASTER_ADDR=`hostname`
+MASTER_PORT=25929
+torchrun \
+    --nproc_per_node $GPUS_PER_NODE \
+    --nnodes $NNODES \
+    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
+    --rdzv_backend c10d \
+    --max_restarts 0 \
+    --role `hostname -s`: \
+    --tee 3 \
+    debug.py \
+    --deepspeed ./scripts/zero3.json \
+    --data_path "/lscratch/30259200/train_json/llava_image_.json" \
+    --image_folder "/lscratch/30259200" \
+    --bf16 True --tf32 True \
+    --output_dir /lscratch/$SLURM_JOB_ID/output \
+    --num_train_epochs 1 \
+    --per_device_train_batch_size 16 \
+    --per_device_eval_batch_size 1 \
+    --gradient_accumulation_steps 8 \
+    --eval_strategy "no" \
+    --save_strategy "steps" \
+    --save_steps 10 \
+    --save_total_limit 1 \
+    --learning_rate 1e-3 \
+    --weight_decay 0. \
+    --warmup_ratio 0.03 \
+    --lr_scheduler_type "cosine" \
+    --logging_steps 2 \
+    --dataloader_num_workers 2 \
+    --lazy_preprocess True \
+    --report_to tensorboard \
+    --cache_dir /data/zhongz2/data/cache_dir \
+    --dataloader_drop_last True \
+    --log_level debug \
+    --group_by_modality_length True \
+    --gradient_checkpointing True \
+    2>&1 | tee log_debug.txt
+"""
+if __name__ == '__main__':
+    model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
+    model_max_length = 8192
+
+    parser = transformers.HfArgumentParser((DataArguments, TrainingArguments))
+    data_args, training_args = parser.parse_args_into_dataclasses()
+    
+    print('data_args args')
+    print(data_args)
+    print('training args')
+    print(training_args)
+
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
+    tokenizer.unk_token = "<|reserved_special_token_0|>"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token
+
+    conv_llava_plain = Conversation(
+        system="",
+        roles=("", ""),
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.PLAIN,
+        sep="\n",
+    )
+
+    conv_llava_llama_3_v2 = Conversation(
+        system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+        roles=("user", "assistant"),
+        version="llama_v3_v2",
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.LLAMA_3,
+        stop_token_ids=[128009],
+        sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+        sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+    )
+
+
+    model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, cache_dir=training_args.cache_dir)
+    model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16)
+    model.tune_projector_only()
+    model.to(training_args.device)
+
+    if training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+    data_args.image_processor = model.image_processor
+    data_args.is_multimodal = True
+    data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava_plain, data_args=data_args)
+
+    model.config.use_cache = False
+    model.config.tokenizer_model_max_length = tokenizer.model_max_length
+    model.config.tokenizer_padding_side = tokenizer.padding_side
+
+    trainer = LLaVATrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+
+    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        print('loading from previous checkpoing')
+        trainer.train(resume_from_checkpoint=True)
+    else:
+        print('training from scratch')
+        trainer.train()
+    trainer.save_state()
+
+    model.config.use_cache = True
