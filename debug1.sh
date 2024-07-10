@@ -53,7 +53,6 @@ if [ "$ACTION" == "eval" ]; then
     fi
 fi
 
-echo "done" >> $MYTMP_DIR/done.txt
 
 
 

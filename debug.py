@@ -1,10 +1,18 @@
-import os, re, copy, json, base64, io
+
 from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
-import numpy as np
-from PIL import Image
 from dataclasses import dataclass, field
 from enum import auto, Enum
+import os
+import copy
+import json
+import base64
+import io
+import numpy as np
+from PIL import Image
 import pathlib
+import ast
+import math
+import re
 
 import torch
 import torch.nn as nn
@@ -15,9 +23,11 @@ from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig
 from transformers import LlamaModel, LlamaForCausalLM, AutoTokenizer 
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from transformers import Trainer
-from transformers.trainer import has_length
+from transformers.trainer import has_length, is_sagemaker_mp_enabled
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
+if is_sagemaker_mp_enabled():
+    import smdistributed.modelparallel.torch as smp
 
 
 # Model Constants
@@ -37,6 +47,8 @@ class DataArguments:
     image_folder: Optional[str] = field(default=None)
     image_aspect_ratio: str = 'square'
     image_crop_resolution: int = 224
+    image_grid_pinpoints: Optional[str] = field(default="[]")
+
 
 @dataclass
 class ModelArguments:
@@ -44,13 +56,21 @@ class ModelArguments:
     conv_version: Optional[str] = field(default="plain")
     pretrain_ckpt_path: Optional[str] = field(default="./pytorch_model.bin")
 
+
 @dataclass
 class TrainingArguments(transformers.TrainingArguments):
     cache_dir: Optional[str] = field(default=None)
     group_by_modality_length: bool = field(default=False)    
     remove_unused_columns: bool = field(default=False)
-
-
+    mm_projector_lr: Optional[float] = None
+    mm_vision_tower_lr: Optional[float] = None
+    model_max_length: int = field(
+        default=512,
+        metadata={
+            "help":
+            "Maximum sequence length. Sequences will be right padded (and possibly truncated)."
+        },
+    )
 
 class SeparatorStyle(Enum):
     """Different separator style."""
@@ -75,8 +95,6 @@ class Conversation:
     stop_str: Union[str, List[str]] = None
     # Stops generation if meeting any token in this list
     stop_token_ids: List[int] = None
-
-    skip_next: bool = False
 
     def dict(self):
         if len(self.get_images()) > 0:
@@ -292,6 +310,154 @@ def preprocess_multimodal(
     return sources
 
 
+
+def select_best_resolution(original_size, possible_resolutions):
+    """
+    Selects the best resolution from a list of possible resolutions based on the original size.
+
+    Args:
+        original_size (tuple): The original size of the image in the format (width, height).
+        possible_resolutions (list): A list of possible resolutions in the format [(width1, height1), (width2, height2), ...].
+
+    Returns:
+        tuple: The best fit resolution in the format (width, height).
+    """
+    original_width, original_height = original_size
+    best_fit = None
+    max_effective_resolution = 0
+    min_wasted_resolution = float("inf")
+
+    for width, height in possible_resolutions:
+        # Calculate the downscaled size to keep the aspect ratio
+        scale = min(width / original_width, height / original_height)
+        downscaled_width, downscaled_height = int(original_width * scale), int(original_height * scale)
+
+        # Calculate effective and wasted resolutions
+        effective_resolution = min(downscaled_width * downscaled_height, original_width * original_height)
+        wasted_resolution = (width * height) - effective_resolution
+
+        if effective_resolution > max_effective_resolution or (effective_resolution == max_effective_resolution and wasted_resolution < min_wasted_resolution):
+            max_effective_resolution = effective_resolution
+            min_wasted_resolution = wasted_resolution
+            best_fit = (width, height)
+
+    return best_fit
+
+
+def resize_and_pad_image(image, target_resolution):
+    """
+    Resize and pad an image to a target resolution while maintaining aspect ratio.
+
+    Args:
+        image (PIL.Image.Image): The input image.
+        target_resolution (tuple): The target resolution (width, height) of the image.
+
+    Returns:
+        PIL.Image.Image: The resized and padded image.
+    """
+    original_width, original_height = image.size
+    target_width, target_height = target_resolution
+
+    # Determine which dimension (width or height) to fill
+    scale_w = target_width / original_width
+    scale_h = target_height / original_height
+
+    if scale_w < scale_h:
+        # Width will be filled completely
+        new_width = target_width
+        new_height = min(math.ceil(original_height * scale_w), target_height)
+    else:
+        # Height will be filled completely
+        new_height = target_height
+        new_width = min(math.ceil(original_width * scale_h), target_width)
+
+    # Resize the image
+    resized_image = image.resize((new_width, new_height))
+
+    # Create a new image with the target size and paste the resized image onto it
+    new_image = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+    paste_x = (target_width - new_width) // 2
+    paste_y = (target_height - new_height) // 2
+    new_image.paste(resized_image, (paste_x, paste_y))
+
+    return new_image
+
+
+def divide_to_patches(image, patch_size):
+    """
+    Divides an image into patches of a specified size.
+
+    Args:
+        image (PIL.Image.Image): The input image.
+        patch_size (int): The size of each patch.
+
+    Returns:
+        list: A list of PIL.Image.Image objects representing the patches.
+    """
+    patches = []
+    width, height = image.size
+    for i in range(0, height, patch_size):
+        for j in range(0, width, patch_size):
+            box = (j, i, j + patch_size, i + patch_size)
+            patch = image.crop(box)
+            patches.append(patch)
+
+    return patches
+
+
+def get_anyres_image_grid_shape(image_size, grid_pinpoints, patch_size):
+    """
+    Calculate the shape of the image patch grid after the preprocessing for images of any resolution.
+
+    Args:
+        image_size (tuple): The size of the input image in the format (width, height).
+        grid_pinpoints (str): A string representation of a list of possible resolutions.
+        patch_size (int): The size of each image patch.
+
+    Returns:
+        tuple: The shape of the image patch grid in the format (width, height).
+    """
+    # if isinstance(grid_pinpoints, str):
+    #     assert patch_size in [224, 336, 384, 448, 512], "patch_size should be in [224, 336, 384, 448, 512]"
+    #     grid_pinpoints = grid_pinpoints.replace(" ", "").replace("x", ",")[1:-1].split("),(")
+    #     grid_pinpoints = [[int(x) * patch_size for x in item.split(",")] for item in grid_pinpoints]
+
+    if type(grid_pinpoints) is list:
+        possible_resolutions = grid_pinpoints
+    else:
+        possible_resolutions = ast.literal_eval(grid_pinpoints)
+    width, height = select_best_resolution(image_size, possible_resolutions)
+    return width // patch_size, height // patch_size
+
+def process_anyres_image(image, processor, grid_pinpoints):
+    """
+    Process an image with variable resolutions.
+
+    Args:
+        image (PIL.Image.Image): The input image to be processed.
+        processor: The image processor object.
+        grid_pinpoints (str): A string representation of a list of possible resolutions.
+
+    Returns:
+        torch.Tensor: A tensor containing the processed image patches.
+    """
+    if type(grid_pinpoints) is list:
+        possible_resolutions = grid_pinpoints
+    else:
+        possible_resolutions = ast.literal_eval(grid_pinpoints)
+    best_resolution = select_best_resolution(image.size, possible_resolutions)
+    image_padded = resize_and_pad_image(image, best_resolution)
+
+    patches = divide_to_patches(image_padded, processor.crop_size['height'])
+
+    image_original_resize = image.resize((processor.size['shortest_edge'], processor.size['shortest_edge']))
+
+    image_patches = [image_original_resize] + patches
+    image_patches = [processor.preprocess(image_patch, return_tensors='pt')['pixel_values'][0]
+                     for image_patch in image_patches]
+    return torch.stack(image_patches, dim=0)
+
+
 class LazySupervisedDataset(Dataset):
     """Dataset for supervised fine-tuning."""
 
@@ -339,13 +505,15 @@ class LazySupervisedDataset(Dataset):
             sources = [sources]
         assert len(sources) == 1, "Don't know why it is wrapped to a list"  # FIXME
         if 'image' in sources[0]:
-            image_file = self.list_data_dict[i]['image']
-            image_folder = self.data_args.image_folder
+            image_file = self.list_data_dict[i]['image'] 
             processor = self.data_args.image_processor
-            image = Image.open(os.path.join(image_folder, image_file)).convert('RGB')
+            image = Image.open(os.path.join(self.data_args.image_folder, image_file)).convert('RGB')
             image_size = image.size
             
-            image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
+            if self.data_args.image_aspect_ratio == 'anyres':
+                image = process_anyres_image(image, processor, self.data_args.image_grid_pinpoints)
+            else:
+                image = processor.preprocess(image, return_tensors='pt')['pixel_values'][0]
 
             sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
         else:
@@ -522,6 +690,146 @@ class LLaVATrainer(Trainer):
         else:
             return super()._get_train_sampler()
 
+    def create_optimizer(self):
+        """
+        Setup the optimizer.
+
+        We provide a reasonable default that works well. If you want to use something else, you can pass a tuple in the
+        Trainer's init through `optimizers`, or subclass and override this method in a subclass.
+        """
+        opt_model = self.model_wrapped if is_sagemaker_mp_enabled() else self.model
+
+        if self.optimizer is None:
+            decay_parameters = self.get_decay_parameter_names(opt_model)
+            if self.args.mm_projector_lr is not None:
+                projector_parameters = [name for name, _ in opt_model.named_parameters() if "mm_projector" in name]
+                if self.args.mm_vision_tower_lr is not None:
+                    vision_tower_parameters = [name for name, _ in opt_model.named_parameters() if "vision_tower" in name]
+                    optimizer_grouped_parameters = [
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n in decay_parameters and n not in projector_parameters and n not in vision_tower_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": self.args.weight_decay,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n in decay_parameters and n not in projector_parameters and n in vision_tower_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": self.args.weight_decay,
+                            "lr": self.args.mm_vision_tower_lr,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n not in projector_parameters and n not in vision_tower_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": 0.0,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n not in projector_parameters and n in vision_tower_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": 0.0,
+                            "lr": self.args.mm_vision_tower_lr,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n in decay_parameters and n in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": self.args.weight_decay,
+                            "lr": self.args.mm_projector_lr,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": 0.0,
+                            "lr": self.args.mm_projector_lr,
+                        },
+                    ]
+                else:
+                    optimizer_grouped_parameters = [
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n in decay_parameters and n not in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": self.args.weight_decay,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n not in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": 0.0,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n in decay_parameters and n in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": self.args.weight_decay,
+                            "lr": self.args.mm_projector_lr,
+                        },
+                        {
+                            "params": [
+                                p for n, p in opt_model.named_parameters() if (n not in decay_parameters and n in projector_parameters and p.requires_grad)
+                            ],
+                            "weight_decay": 0.0,
+                            "lr": self.args.mm_projector_lr,
+                        },
+                    ]
+            else:
+                optimizer_grouped_parameters = [
+                    {
+                        "params": [
+                            p for n, p in opt_model.named_parameters() if (n in decay_parameters and p.requires_grad)
+                        ],
+                        "weight_decay": self.args.weight_decay,
+                    },
+                    {
+                        "params": [
+                            p for n, p in opt_model.named_parameters() if (n not in decay_parameters and p.requires_grad)
+                        ],
+                        "weight_decay": 0.0,
+                    },
+                ]
+
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(self.args, opt_model)
+
+            # Overwrite `params` in case it's created by `get_optimizer_cls_and_kwargs`
+            # e.g. for GaLore optimizer.
+            if "params" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("params")
+
+            # Overwrite `model` in case it's created by `get_optimizer_cls_and_kwargs`
+            # e.g. for LOMO optimizer.
+            if "model" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("model")
+
+            # For layer-wise dummy optimizers we overwrite optimizer_grouped_parameters with `optimizer_dict`
+            # to avoid arguments conflicts.
+            if "optimizer_dict" in optimizer_kwargs:
+                optimizer_grouped_parameters = optimizer_kwargs.pop("optimizer_dict")
+
+            self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
+
+            if optimizer_cls.__name__ == "Adam8bit":
+                import bitsandbytes
+
+                manager = bitsandbytes.optim.GlobalOptimManager.get_instance()
+
+                skipped = 0
+                for module in opt_model.modules():
+                    if isinstance(module, nn.Embedding):
+                        skipped += sum({p.data_ptr(): p.numel() for p in module.parameters()}.values())
+                        logger.info(f"skipped {module}: {skipped/2**20}M params")
+                        manager.register_module_override(module, "weight", {"optim_bits": 32})
+                        logger.debug(f"bitsandbytes: will optimize {module} in fp32")
+                logger.info(f"skipped: {skipped/2**20}M params")
+
+        if is_sagemaker_mp_enabled():
+            self.optimizer = smp.DistributedOptimizer(self.optimizer)
+
+        return self.optimizer
+
 
 def unpad_image(tensor, original_size):
     """
@@ -573,12 +881,21 @@ class DebugLlavaForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config) 
 
-    def initialize_vision_modules(self, device="auto", dtype=torch.bfloat16):
+    def initialize_vision_modules(self, device="auto", dtype=torch.bfloat16, mm_projector_type="mlp2x_gelu"):
         vision_tower_name_or_ckpt = 'openai/clip-vit-large-patch14-336'
         self.image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name_or_ckpt)
         self.vision_tower = CLIPVisionModel.from_pretrained(vision_tower_name_or_ckpt).to(device=device, dtype=dtype)
 
-        self.mm_projector = nn.Linear(self.vision_tower.config.hidden_size, self.config.hidden_size, device=device, dtype=dtype)
+        if mm_projector_type == 'linear':
+            self.mm_projector = nn.Linear(self.vision_tower.config.hidden_size, self.config.hidden_size, device=device, dtype=dtype)
+        elif mm_projector_type == 'mlp2x_gelu':
+            mlp_gelu_match = re.match(r"^mlp(\d+)x_gelu$", mm_projector_type)
+            mlp_depth = int(mlp_gelu_match.group(1))
+            modules = [nn.Linear(self.vision_tower.config.hidden_size, self.config.hidden_size)]
+            for _ in range(1, mlp_depth):
+                modules.append(nn.GELU())
+                modules.append(nn.Linear(self.config.hidden_size, self.config.hidden_size))
+            self.mm_projector = nn.Sequential(*modules).to(device=device, dtype=dtype)
 
         self.num_patches_per_side = self.vision_tower.config.image_size // self.vision_tower.config.patch_size
 
@@ -624,8 +941,13 @@ class DebugLlavaForCausalLM(LlamaForCausalLM):
                     height = width = self.num_patches_per_side
                     assert height * width == base_image_feature.shape[0]
                     
-                    image_feature = image_feature.view(2, 2, height, width, -1)
+                    if self.config.image_aspect_ratio == "anyres":
+                        num_patch_width, num_patch_height = get_anyres_image_grid_shape(image_sizes[image_idx], self.config.image_grid_pinpoints, self.vision_tower.config.image_size)
+                        image_feature = image_feature.view(num_patch_height, num_patch_width, height, width, -1)
+                    else:
+                        image_feature = image_feature.view(2, 2, height, width, -1)
 
+                    # spatial_unpad
                     image_feature = image_feature.permute(4, 0, 2, 1, 3).contiguous()
                     image_feature = image_feature.flatten(1, 2).flatten(2, 3)
                     image_feature = unpad_image(image_feature, image_sizes[image_idx])
@@ -825,53 +1147,128 @@ def debug():
 
     image_features_projected = mm_projector(image_features)
 
-"""
-NNODES=1
-GPUS_PER_NODE=2
-MASTER_ADDR=`hostname`
-MASTER_PORT=25929
-torchrun \
-    --nproc_per_node $GPUS_PER_NODE \
-    --nnodes $NNODES \
-    --rdzv_endpoint $MASTER_ADDR:$MASTER_PORT \
-    --rdzv_backend c10d \
-    --max_restarts 0 \
-    --role `hostname -s`: \
-    --tee 3 \
-    debug.py \
-    --deepspeed ./scripts/zero3.json \
-    --data_path "/lscratch/30259200/train_json/llava_image_.json" \
-    --image_folder "/lscratch/30259200" \
-    --bf16 True --tf32 True \
-    --output_dir /lscratch/$SLURM_JOB_ID/output \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 32 \
-    --per_device_eval_batch_size 1 \
-    --gradient_accumulation_steps 4 \
-    --eval_strategy "no" \
-    --save_strategy "steps" \
-    --save_steps 10 \
-    --save_total_limit 1 \
-    --learning_rate 1e-3 \
-    --weight_decay 0. \
-    --warmup_ratio 0.03 \
-    --lr_scheduler_type "cosine" \
-    --logging_steps 1 \
-    --dataloader_num_workers 8 \
-    --report_to tensorboard \
-    --cache_dir /data/zhongz2/data/cache_dir \
-    --dataloader_drop_last True \
-    --log_level debug \
-    --group_by_modality_length True \
-    --gradient_checkpointing True \
-    2>&1 | tee log_debug.txt
-"""
-if __name__ == '__main__':
+
+def train():
     model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
-    model_max_length = 8192
 
     parser = transformers.HfArgumentParser((DataArguments, ModelArguments, TrainingArguments))
     data_args, model_args, training_args = parser.parse_args_into_dataclasses()
+    
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        model_max_length=training_args.model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
+    tokenizer.unk_token = "<|reserved_special_token_0|>"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token
+
+    if model_args.conv_version == 'plain':  # for pretrain
+        conv_llava = Conversation(
+            system="",
+            roles=("", ""),
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.PLAIN,
+            sep="\n",
+        )
+    elif model_args.conv_version == 'llama_3': # for fine tune
+        conv_llava = Conversation(
+            system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+            roles=("user", "assistant"),
+            version="llama_v3",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
+    else:
+        raise ValueError("wrong conv_version")
+
+    model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, cache_dir=training_args.cache_dir, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16)
+    model.to(training_args.device)
+    model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16)
+    if model_args.conv_version == 'plain':
+        model.tune_projector_only()
+    else:
+        print(f'loading from pretrained checkpoint {model_args.pretrain_ckpt_path}')
+        model.config.pretrain_ckpt_path = model_args.pretrain_ckpt_path
+        model.load_state_dict(torch.load(model_args.pretrain_ckpt_path), strict=False)
+        lr_of_vit = training_args.mm_vision_tower_lr if training_args.mm_vision_tower_lr is not None else training_args.learning_rate
+        lr_of_mlp = training_args.mm_projector_lr if training_args.mm_projector_lr is not None else training_args.learning_rate
+        training_args.mm_projector_lr = lr_of_mlp
+    # Calculate total parameters and trainable parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print('total_params: ', total_params)
+    print('trainable_params: ', trainable_params)
+
+    if training_args.gradient_checkpointing:
+        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        else:
+            def make_inputs_require_grad(module, input, output):
+                output.requires_grad_(True)
+            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+
+    data_args.image_processor = model.image_processor
+    data_args.is_multimodal = True
+    data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
+
+    model.config.use_cache = False
+    model.config.tokenizer_model_max_length = tokenizer.model_max_length
+    model.config.tokenizer_padding_side = tokenizer.padding_side
+    model.config.image_aspect_ratio = data_args.image_aspect_ratio
+    if data_args.image_aspect_ratio == 'anyres':
+        base_size = model.vision_tower.config.image_size
+        grids = [[1, 2], [2, 1], [2, 2], [3, 1], [1, 3]]
+        model.config.image_grid_pinpoints = data_args.image_grid_pinpoints = [
+            [g[0]*base_size, g[1]*base_size] for g in grids]
+    model.config.mm_projector_lr = training_args.mm_projector_lr
+    model.config.mm_vision_tower_lr = training_args.mm_vision_tower_lr
+
+    trainer = LLaVATrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
+
+    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        print('loading from previous checkpoing')
+        trainer.train(resume_from_checkpoint=True)
+    else:
+        print('training from scratch')
+        trainer.train()
+    trainer.save_state()
+
+    model.config.use_cache = True
+
+
+def test_wds():
+
+
+
+    tmp_dir = os.path.join('/lscratch', os.environ['SLURM_JOB_ID'])
+    model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
+    model_max_length = 8192
+    data_args = DataArguments()
+    data_args.data_path = [
+        os.path.join(tmp_dir, 'train_json', 'llava_image_.json'),
+        os.path.join(tmp_dir, 'train_json', 'llava_med_alignment_500k_cleaned.json')
+    ]
+    data_args.image_folder = tmp_dir
+    model_args = ModelArguments()
+    model_args.conv_version = 'llama_3'
+
+    training_args = TrainingArguments(
+        output_dir=os.path.join(tmp_dir, 'output'),
+        cache_dir='/data/zhongz2/data/cache_dir' 
+    )
+
+
+    # parser = transformers.HfArgumentParser((DataArguments, ModelArguments, TrainingArguments))
+    # data_args, model_args, training_args = parser.parse_args_into_dataclasses()
     
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,
@@ -908,53 +1305,24 @@ if __name__ == '__main__':
     else:
         raise ValueError("wrong conv_version")
 
-    model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, cache_dir=training_args.cache_dir)
-    model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16)
-    if model_args.conv_version == 'plain':
-        model.tune_projector_only()
-    else:
-        model.load_state_dict(torch.load(pretrain_ckpt_path))
-    model.to(training_args.device)
 
-    if training_args.gradient_checkpointing:
-        training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+    vision_tower_name_or_ckpt = 'openai/clip-vit-large-patch14-336'
+    image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name_or_ckpt)
 
-    data_args.image_processor = model.image_processor
+
+    data_args.image_processor = image_processor # model.image_processor
     data_args.is_multimodal = True
-    data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
+    train_dataset = LazySupervisedDataset(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
 
-    model.config.use_cache = False
-    model.config.tokenizer_model_max_length = tokenizer.model_max_length
-    model.config.tokenizer_padding_side = tokenizer.padding_side
+    save_dir = os.path.join(tmp_dir, 'data_{}'.format(model_args.conv_version))
+    os.makedirs(save_dir, exist_ok=True)
+    from torch.utils.data import DataLoader
+    dataloader = DataLoader(train_dataset, batch_size=1, shuffle=False, num_workers=4)
+    for i, item in enumerate(dataloader): 
+        torch.save(item, os.path.join(save_dir, f'{i}.pt'))  # 1.3M per sample, too much disk space usage
+        if i == 100:
+            break
 
-    trainer = LLaVATrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
-
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        print('loading from previous checkpoing')
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        print('training from scratch')
-        trainer.train()
-    trainer.save_state()
-
-    model.config.use_cache = True
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+if __name__ == '__main__':
+    train()
+    
