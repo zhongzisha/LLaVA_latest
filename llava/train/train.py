@@ -1140,6 +1140,17 @@ def train(attn_implementation=None):
     data_module = make_supervised_data_module(tokenizer=tokenizer,
                                               data_args=data_args,
                                               model_args=model_args)
+
+    if local_rank == 0:
+        # Calculate total parameters and trainable parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print('total_params: ', total_params)
+        print('trainable_params: ', trainable_params)
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                print(name, p.shape)
+                
     trainer = LLaVATrainer(model=model,
                     tokenizer=tokenizer,
                     args=training_args,

@@ -40,6 +40,7 @@ class LlavaMetaModel:
             self.mm_projector = build_vision_projector(config, vision_cfg=self.vision_tower.config)
 
             if "unpad" in getattr(config, "mm_patch_merge_type", ""):
+                print('yes, unpad in mm_patch_merge_type')
                 self.image_newline = nn.Parameter(torch.empty(config.hidden_size, dtype=self.dtype))
 
     def get_vision_tower(self):
@@ -94,6 +95,7 @@ class LlavaMetaModel:
             self.mm_projector = build_vision_projector(self.config, vision_cfg=vision_tower.config)
 
             if "unpad" in mm_patch_merge_type:
+                print('yes, unpad in mm_patch_merge_type22222')
                 embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=self.dtype))
                 self.image_newline = nn.Parameter(torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std)
         else:
