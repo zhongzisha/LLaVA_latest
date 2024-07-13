@@ -24,16 +24,16 @@ save_steps=5
 num_train_epochs=1
 
 
-per_device_train_batch_size=4
-gradient_accumulation_steps=1
+per_device_train_batch_size=2
+gradient_accumulation_steps=4
 learning_rate=2e-5
 data_type_str="--bf16 True --tf32 True"
 deepspeed_config="zero3_offload_param"
-deepspeed_config="zero2"
+deepspeed_config="zero3"
 conv_version=plain
 conv_version=llama_3
 num_workers=2
-pretrain_ckpt_path=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/checkpoint-15/mm_projector.bin
+pretrain_ckpt_path=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/mm_projector.bin
 output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi
 
@@ -84,7 +84,7 @@ torchrun \
     --group_by_modality_length True \
     --gradient_checkpointing True \
     --image_aspect_ratio anyres \
-    --model_max_length 8192 \
+    --model_max_length 6144 \
     --log_level debug \
     --conv_version ${conv_version} \
     --pretrain_ckpt_path ${pretrain_ckpt_path} \

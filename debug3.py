@@ -1246,7 +1246,8 @@ def debug():
 
 
 
-def trainer_save_model_safe(trainer: transformers.Trainer):
+def trainer_save_model_safe_fsdp(trainer: transformers.Trainer,
+                                 output_dir: str):
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.distributed.fsdp import StateDictType, FullStateDictConfig
 
@@ -1254,7 +1255,45 @@ def trainer_save_model_safe(trainer: transformers.Trainer):
     with FSDP.state_dict_type(
         trainer.model, StateDictType.FULL_STATE_DICT, save_policy
     ):
-        trainer.save_model()
+        trainer.save_model(output_dir=output_dir)
+
+
+def safe_save_model_for_hf_trainer(trainer: transformers.Trainer,
+                                   output_dir: str):
+    """Collects the state dict and dump to disk."""
+
+    if getattr(trainer.args, 'conv_version', 'plain') == 'plain':
+        # Only save Adapter
+        keys_to_match = ['mm_projector']
+
+        weight_to_save = get_mm_adapter_state_maybe_zero_3(trainer.model.named_parameters(), keys_to_match)
+        trainer.model.config.save_pretrained(output_dir)
+
+        current_folder = output_dir.split('/')[-1]
+        parent_folder = os.path.dirname(output_dir)
+        if trainer.args.local_rank == 0 or trainer.args.local_rank == -1:
+            if current_folder.startswith('checkpoint-'):
+                mm_projector_folder = os.path.join(parent_folder, "mm_projector")
+                os.makedirs(mm_projector_folder, exist_ok=True)
+                torch.save(weight_to_save, os.path.join(mm_projector_folder, f'{current_folder}.bin'))
+            else:
+                torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+        return
+
+    if trainer.deepspeed:
+        torch.cuda.synchronize()
+        trainer.save_model(output_dir)
+        return
+
+    state_dict = trainer.model.state_dict()
+    if trainer.args.should_save:
+        cpu_state_dict = {
+            key: value.cpu()
+            for key, value in state_dict.items()
+        }
+        del state_dict
+        trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
+
 
 
 def train():
@@ -1309,7 +1348,6 @@ def train():
     model.to(training_args.device)
 
     training_args.conv_version = model_args.conv_version
-    # model.vision_tower.requires_grad_(False)
     if model_args.conv_version == 'plain': 
         # self.model.requires_grad_(False)
         # self.lm_head.requires_grad_(False)
@@ -1319,6 +1357,7 @@ def train():
         for p in model.mm_projector.parameters():
             p.requires_grad = True
     else:
+        model.vision_tower.requires_grad_(False)
         lr_of_vit = training_args.mm_vision_tower_lr if training_args.mm_vision_tower_lr is not None else training_args.learning_rate
         lr_of_mlp = training_args.mm_projector_lr if training_args.mm_projector_lr is not None else training_args.learning_rate
         training_args.mm_projector_lr = lr_of_mlp
@@ -1378,10 +1417,11 @@ def train():
     # Save model
     model.config.use_cache = True
     trainer.save_state()
-    if trainer.is_deepspeed_enabled:
-        trainer.save_model()
+    if training_args.fsdp is not None and len(training_args.fsdp) > 0:
+        trainer_save_model_safe_fsdp(trainer=trainer, output_dir=training_args.output_dir)
     else:
-        trainer_save_model_safe(trainer)
+        safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
+
 
 def test_wds():
 

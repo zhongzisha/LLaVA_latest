@@ -23,7 +23,9 @@ from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig
 from transformers import LlamaModel, LlamaForCausalLM, AutoTokenizer 
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from transformers import Trainer
-from transformers.trainer import has_length, is_sagemaker_mp_enabled
+from transformers.trainer import has_length, is_sagemaker_mp_enabled, \
+    load_sharded_checkpoint, PreTrainedModel, is_peft_available, TRAINING_ARGS_NAME, \
+    SAFE_WEIGHTS_NAME, WEIGHTS_NAME
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
 if is_sagemaker_mp_enabled():
@@ -54,7 +56,7 @@ class DataArguments:
 class ModelArguments:
     model_name_or_path: Optional[str] = field(default="facebook/opt-125m")
     conv_version: Optional[str] = field(default="plain")
-    pretrain_ckpt_path: Optional[str] = field(default="./pytorch_model.bin")
+    pretrain_ckpt_path: Optional[str] = field(default=None)
 
 
 @dataclass
@@ -673,6 +675,27 @@ class LengthGroupedSampler(Sampler):
         return iter(indices)
 
 
+
+def maybe_zero_3(param, ignore_status=False, name=None):
+    from deepspeed import zero
+    from deepspeed.runtime.zero.partition_parameters import ZeroParamStatus
+    if hasattr(param, "ds_id"):
+        if param.ds_status == ZeroParamStatus.NOT_AVAILABLE:
+            if not ignore_status:
+                print(name, 'no ignore status')
+        with zero.GatheredParameters([param]):
+            param = param.data.detach().cpu().clone()
+    else:
+        param = param.detach().cpu().clone()
+    return param
+
+
+def get_mm_adapter_state_maybe_zero_3(named_params, keys_to_match):
+    to_return = {k: t for k, t in named_params if any(key_match in k for key_match in keys_to_match)}
+    to_return = {k: maybe_zero_3(v, ignore_status=True, name=k).cpu() for k, v in to_return.items()}
+    return to_return
+
+
 class LLaVATrainer(Trainer):
 
     def _get_train_sampler(self) -> Optional[torch.utils.data.Sampler]:
@@ -831,6 +854,81 @@ class LLaVATrainer(Trainer):
         return self.optimizer
 
 
+    def _save_checkpoint(self, model, trial, metrics=None):
+        if getattr(self.args, 'conv_version', 'plain') == 'plain':
+            from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
+            checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
+
+            run_dir = self._get_output_dir(trial=trial)
+            output_dir = os.path.join(run_dir, checkpoint_folder)
+
+            # Only save Adapter
+            keys_to_match = ['mm_projector', 'vision_resampler'] 
+
+            weight_to_save = get_mm_adapter_state_maybe_zero_3(self.model.named_parameters(), keys_to_match)
+
+            if self.args.local_rank == 0 or self.args.local_rank == -1:
+                self.model.config.save_pretrained(output_dir)
+                torch.save(weight_to_save, os.path.join(output_dir, f'mm_projector.bin'))
+        else:
+            super(LLaVATrainer, self)._save_checkpoint(model, trial, metrics)
+
+    def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        if getattr(self.args, 'conv_version', 'plain') == 'plain':
+            pass
+        else:
+            super(LLaVATrainer, self)._save(output_dir, state_dict)
+
+    def _save1(self, output_dir: Optional[str] = None, state_dict=None):
+        # If we are executing this function, we are the process zero, so we don't check for that.
+        output_dir = output_dir if output_dir is not None else self.args.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+
+        supported_classes = (PreTrainedModel,) # if not is_peft_available() else (PreTrainedModel, PeftModel)
+        print('supported_classes', supported_classes)
+        # Save a trained model and configuration using `save_pretrained()`.
+        # They can then be reloaded using `from_pretrained()`
+        if not isinstance(self.model, supported_classes):
+            if state_dict is None:
+                state_dict = self.model.state_dict()
+
+            if isinstance(self.accelerator.unwrap_model(self.model), supported_classes):
+                print('using accelerator.unwrap_model')
+                self.accelerator.unwrap_model(self.model).save_pretrained(
+                    output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors
+                )
+            else:
+                print('not using accelerator.unwrap_model')
+                if self.args.save_safetensors:
+                    print('safetensors')
+                    safetensors.torch.save_file(
+                        state_dict, os.path.join(output_dir, SAFE_WEIGHTS_NAME), metadata={"format": "pt"}
+                    )
+                else:
+                    print('not safetensors')
+                    torch.save(state_dict, os.path.join(output_dir, WEIGHTS_NAME))
+        else:
+            # print('not supported classes')
+            # self.model.save_pretrained(
+            #     output_dir, state_dict=state_dict, safe_serialization=self.args.save_safetensors
+            # )
+            print('using accelerator.unwrap_model')
+            self.accelerator.unwrap_model(self.model).save_pretrained(
+                output_dir, safe_serialization=self.args.save_safetensors,
+                state_dict=self.accelerator.get_state_dict(self.model),
+                is_main_process=self.accelerator.is_main_process,
+                save_function=self.accelerator.save,
+            )
+
+        if self.tokenizer is not None:
+            print('saving tokenizer')
+            self.tokenizer.save_pretrained(output_dir)
+
+        # Good practice: save your training arguments together with the trained model
+        print('saving training args')
+        torch.save(self.args, os.path.join(output_dir, TRAINING_ARGS_NAME))
+
+
 def unpad_image(tensor, original_size):
     """
     Unpads a PyTorch tensor of a padded and resized image.
@@ -881,7 +979,7 @@ class DebugLlavaForCausalLM(LlamaForCausalLM):
     def __init__(self, config):
         super().__init__(config) 
 
-    def initialize_vision_modules(self, device="auto", dtype=torch.bfloat16, mm_projector_type="mlp2x_gelu"):
+    def initialize_vision_modules(self, device="auto", dtype=torch.bfloat16, mm_projector_type="mlp2x_gelu", pretrain_ckpt_path=None):
         vision_tower_name_or_ckpt = 'openai/clip-vit-large-patch14-336'
         self.image_processor = CLIPImageProcessor.from_pretrained(vision_tower_name_or_ckpt)
         self.vision_tower = CLIPVisionModel.from_pretrained(vision_tower_name_or_ckpt).to(device=device, dtype=dtype)
@@ -895,18 +993,17 @@ class DebugLlavaForCausalLM(LlamaForCausalLM):
             for _ in range(1, mlp_depth):
                 modules.append(nn.GELU())
                 modules.append(nn.Linear(self.config.hidden_size, self.config.hidden_size))
-            self.mm_projector = nn.Sequential(*modules).to(device=device, dtype=dtype)
+            self.mm_projector = nn.Sequential(*modules)
+
+        if pretrain_ckpt_path is not None:
+            print('loading pretrain ckpt path for mm_projector')
+            self.mm_projector.load_state_dict(torch.load(pretrain_ckpt_path), strict=False)
+        self.mm_projector.to(device=device, dtype=dtype)
 
         self.num_patches_per_side = self.vision_tower.config.image_size // self.vision_tower.config.patch_size
 
         embed_std = 1 / torch.sqrt(torch.tensor(self.config.hidden_size, dtype=dtype))
         self.image_newline = nn.Parameter(torch.randn(self.config.hidden_size, dtype=dtype, device=device) * embed_std)
-
-    def tune_projector_only(self):
-        self.model.requires_grad_(False)
-        self.vision_tower.requires_grad_(False)
-        for p in self.mm_projector.parameters():
-            p.requires_grad = True
 
     def encode_images(self, images):
         vision_tower_outputs = self.vision_tower(images, output_hidden_states=True) 
@@ -1148,12 +1245,30 @@ def debug():
     image_features_projected = mm_projector(image_features)
 
 
+
+def trainer_save_model_safe(trainer: transformers.Trainer):
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+    from torch.distributed.fsdp import StateDictType, FullStateDictConfig
+
+    save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    with FSDP.state_dict_type(
+        trainer.model, StateDictType.FULL_STATE_DICT, save_policy
+    ):
+        trainer.save_model()
+
+
 def train():
     model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
 
     parser = transformers.HfArgumentParser((DataArguments, ModelArguments, TrainingArguments))
     data_args, model_args, training_args = parser.parse_args_into_dataclasses()
-    
+    local_rank = training_args.local_rank
+    print('local_rank', local_rank)
+    if local_rank == 0:
+        print(data_args)
+        print(model_args)
+        print(training_args)
+
     tokenizer = AutoTokenizer.from_pretrained(
         model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -1190,22 +1305,33 @@ def train():
         raise ValueError("wrong conv_version")
 
     model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, cache_dir=training_args.cache_dir, attn_implementation="flash_attention_2", torch_dtype=torch.bfloat16)
+    model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16, pretrain_ckpt_path=model_args.pretrain_ckpt_path)
     model.to(training_args.device)
-    model.initialize_vision_modules(device=training_args.device, dtype=torch.bfloat16)
-    if model_args.conv_version == 'plain':
-        model.tune_projector_only()
+
+    training_args.conv_version = model_args.conv_version
+    # model.vision_tower.requires_grad_(False)
+    if model_args.conv_version == 'plain': 
+        # self.model.requires_grad_(False)
+        # self.lm_head.requires_grad_(False)
+        # self.vision_tower.requires_grad_(False)
+        # self.image_newline.requires_grad_(False)
+        model.requires_grad_(False)
+        for p in model.mm_projector.parameters():
+            p.requires_grad = True
     else:
-        print(f'loading from pretrained checkpoint {model_args.pretrain_ckpt_path}')
-        model.config.pretrain_ckpt_path = model_args.pretrain_ckpt_path
-        model.load_state_dict(torch.load(model_args.pretrain_ckpt_path), strict=False)
         lr_of_vit = training_args.mm_vision_tower_lr if training_args.mm_vision_tower_lr is not None else training_args.learning_rate
         lr_of_mlp = training_args.mm_projector_lr if training_args.mm_projector_lr is not None else training_args.learning_rate
         training_args.mm_projector_lr = lr_of_mlp
-    # Calculate total parameters and trainable parameters
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print('total_params: ', total_params)
-    print('trainable_params: ', trainable_params)
+    
+    if local_rank == 0:
+        # Calculate total parameters and trainable parameters
+        total_params = sum(p.numel() for p in model.parameters())
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print('total_params: ', total_params)
+        print('trainable_params: ', trainable_params)
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                print(name, p.shape)
 
     if training_args.gradient_checkpointing:
         training_args.gradient_checkpointing_kwargs=dict(use_reentrant=False)
@@ -1219,6 +1345,7 @@ def train():
     data_args.image_processor = model.image_processor
     data_args.is_multimodal = True
     data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
+    print('len train dataset', len(data_module['train_dataset']))
 
     model.config.use_cache = False
     model.config.tokenizer_model_max_length = tokenizer.model_max_length
@@ -1234,16 +1361,27 @@ def train():
 
     trainer = LLaVATrainer(model=model, tokenizer=tokenizer, args=training_args, **data_module)
 
+    model.config.pretrain_ckpt_path = model_args.pretrain_ckpt_path
+    # print(f'loading from pretrained checkpoint {model_args.pretrain_ckpt_path}')
+    # if model_args.pretrain_ckpt_path is not None:
+    #     unwrapped_model = trainer.accelerator.unwrap_model(model)
+    #     load_sharded_checkpoint(unwrapped_model, model_args.pretrain_ckpt_path, strict=False)
+    #     # load_sharded_checkpoint(trainer.model, model_args.pretrain_ckpt_path, strict=False)
+
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
         print('loading from previous checkpoing')
         trainer.train(resume_from_checkpoint=True)
     else:
         print('training from scratch')
         trainer.train()
-    trainer.save_state()
 
+    # Save model
     model.config.use_cache = True
-
+    trainer.save_state()
+    if trainer.is_deepspeed_enabled:
+        trainer.save_model()
+    else:
+        trainer_save_model_safe(trainer)
 
 def test_wds():
 

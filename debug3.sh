@@ -20,7 +20,7 @@ FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}
 PRETRAIN_DATA="${JSON_FOLDER}/llava_image_debug1.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned_debug1.json"
 save_steps=5
-num_train_epochs=3
+num_train_epochs=2
 
 
 per_device_train_batch_size=2

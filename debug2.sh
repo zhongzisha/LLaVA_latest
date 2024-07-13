@@ -17,7 +17,7 @@ VIDEO_FOLDER="${MYTMP_DIR}"
 
 PRETRAIN_DATA="${JSON_FOLDER}/llava_image_.json ${JSON_FOLDER}/llava_med_alignment_500k_cleaned.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/la_tune_256k.json ${JSON_FOLDER}/lrv_tune_331k.json ${JSON_FOLDER}/lvis_tune_220k_.json ${JSON_FOLDER}/svit_tune_157k.json ${JSON_FOLDER}/nlp_tune.json"
-save_steps=5
+save_steps=100
 num_train_epochs=1
 
 
@@ -27,8 +27,9 @@ learning_rate=1e-3
 data_type_str="--bf16 True --tf32 True"
 deepspeed_config="zero3"
 conv_version=plain
-num_workers=4
+num_workers=8
 output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres
+pretrain_ckpt_path=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/checkpoint-5/mm_projector.bin
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi
 
 if [ "${SLURM_JOB_NODELIST}" != "" ]; then
@@ -68,7 +69,7 @@ torchrun \
     --weight_decay 0. \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
-    --logging_steps 10 \
+    --logging_steps 1 \
     --dataloader_num_workers ${num_workers} \
     --report_to tensorboard \
     --cache_dir /data/zhongz2/data/cache_dir \
@@ -79,6 +80,7 @@ torchrun \
     --model_max_length 8192 \
     --conv_version ${conv_version} \
     2>&1 | tee log_debug_pretrain.txt
+
 
 exit;
 --log_level debug \
