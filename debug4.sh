@@ -20,7 +20,7 @@ FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json"
 PRETRAIN_DATA="${JSON_FOLDER}/llava_image_debug1.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned_debug1.json"
-save_steps=5
+save_steps=100
 num_train_epochs=1
 
 
@@ -29,7 +29,7 @@ gradient_accumulation_steps=4
 learning_rate=2e-5
 data_type_str="--bf16 True --tf32 True"
 deepspeed_config="zero3_offload_param"
-deepspeed_config="zero3"
+deepspeed_config="zero3_deepspeed"
 conv_version=plain
 conv_version=llama_3
 num_workers=2
@@ -84,7 +84,7 @@ torchrun \
     --group_by_modality_length True \
     --gradient_checkpointing True \
     --image_aspect_ratio anyres \
-    --model_max_length 6144 \
+    --model_max_length 8192 \
     --log_level debug \
     --conv_version ${conv_version} \
     --pretrain_ckpt_path ${pretrain_ckpt_path} \
@@ -97,3 +97,21 @@ exit;
     --deepspeed ./scripts/${deepspeed_config}.json \
 
     --pretrain_ckpt_path ${pretrain_ckpt_path} \
+
+
+
+# 20240713
+modify vim /data/zhongz2/anaconda3/envs/th21_ds/lib/python3.11/site-packages/transformers/trainer.py 
+add the following to "_maybe_log_save_evaluate" function 
+```
+self.accelerator.empty_cache()
+if self.is_deepspeed_enabled:
+    self.deepspeed.empty_partition_cache()
+```
+
+
+
+
+
+
+

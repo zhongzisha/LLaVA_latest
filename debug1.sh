@@ -39,14 +39,14 @@ if [ "$ACTION" == "eval" ]; then
         # frce
         mkdir eval
         cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/MoE/eval/eval.zip
-        cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/MoE/eval/vqav2/test2015.zip
+        # cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/MoE/eval/vqav2/test2015.zip
         cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/MoE/eval/textvqa/train_val_images.zip
         cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/MoE//eval/textvqa/TextVQA_0.5.1_val.json .
         cd $MYTMP_DIR
     else
         mkdir eval
         cd $MYTMP_DIR/eval && unzip -qq ${DATA_ROOT}/eval/eval.zip
-        cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/eval/vqav2/test2015.zip
+        # cd $MYTMP_DIR/eval/vqav2 && unzip -qq ${DATA_ROOT}/eval/vqav2/test2015.zip
         cd $MYTMP_DIR/eval/textvqa && unzip -qq ${DATA_ROOT}/eval/textvqa/train_val_images.zip
         cd $MYTMP_DIR/eval/textvqa && cp ${DATA_ROOT}/eval/textvqa/TextVQA_0.5.1_val.json .
         cd $MYTMP_DIR
