@@ -18,13 +18,13 @@ VIDEO_FOLDER="${MYTMP_DIR}"
 PRETRAIN_DATA="${JSON_FOLDER}/llava_image_.json ${JSON_FOLDER}/llava_med_alignment_500k_cleaned.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/la_tune_256k.json ${JSON_FOLDER}/lrv_tune_331k.json ${JSON_FOLDER}/lvis_tune_220k_.json ${JSON_FOLDER}/svit_tune_157k.json ${JSON_FOLDER}/nlp_tune.json"
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json"
-PRETRAIN_DATA="${JSON_FOLDER}/llava_image_debug1.json"
-FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned_debug1.json"
-save_steps=100
+# PRETRAIN_DATA="${JSON_FOLDER}/llava_image_debug1.json"
+# FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned_debug1.json"
+save_steps=200
 num_train_epochs=1
 
 
-per_device_train_batch_size=2
+per_device_train_batch_size=4
 gradient_accumulation_steps=4
 learning_rate=2e-5
 data_type_str="--bf16 True --tf32 True"
@@ -33,8 +33,8 @@ deepspeed_config="zero3_deepspeed"
 conv_version=plain
 conv_version=llama_3
 num_workers=2
-pretrain_ckpt_path=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/mm_projector.bin
-output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2
+pretrain_ckpt_path=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/mm_projector.bin
+output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi
 
 if [ "${SLURM_JOB_NODELIST}" != "" ]; then
@@ -56,7 +56,7 @@ torchrun \
     --max_restarts 0 \
     --role `hostname -s`: \
     --tee 3 \
-    debug3.py \
+    debug.py \
     --deepspeed ./scripts/${deepspeed_config}.json \
     --data_path $FINETUNE_DATA \
     --image_folder $IMAGE_FOLDER \
@@ -85,34 +85,33 @@ torchrun \
     --gradient_checkpointing True \
     --image_aspect_ratio anyres \
     --model_max_length 8192 \
-    --log_level debug \
     --conv_version ${conv_version} \
     --pretrain_ckpt_path ${pretrain_ckpt_path} \
-    2>&1 | tee log_debug3_finetune.txt
+    2>&1 | tee log_debug_finetune.txt
 
 exit;
---log_level debug \
-    --fsdp "full_shard auto_wrap offload" \
-    --fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer' \
-    --deepspeed ./scripts/${deepspeed_config}.json \
 
-    --pretrain_ckpt_path ${pretrain_ckpt_path} \
+
+--log_level debug \
+--fsdp "full_shard auto_wrap offload" \
+--fsdp_transformer_layer_cls_to_wrap 'LlamaDecoderLayer' \
+--deepspeed ./scripts/${deepspeed_config}.json \
+
+--pretrain_ckpt_path ${pretrain_ckpt_path} \
 
 
 
 # 20240713
-vim /data/zhongz2/anaconda3/envs/th21_ds/lib/python3.11/site-packages/transformers/trainer.py 
+modify vim /data/zhongz2/anaconda3/envs/th21_ds/lib/python3.11/site-packages/transformers/trainer.py 
 add the following to "_maybe_log_save_evaluate" function 
 ```
-            # self.accelerator.empty_cache()
-            torch.cuda.empty_cache()
-            gc.collect()
-            if self.is_deepspeed_enabled:
-                self.deepspeed.empty_partition_cache()
+self.accelerator.empty_cache()
+if self.is_deepspeed_enabled:
+    self.deepspeed.empty_partition_cache()
 ```
 
-# zip from a list of files
-zip archive.zip -@ < sample_images/samples.txt
+
+
 
 
 
