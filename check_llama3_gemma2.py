@@ -343,11 +343,11 @@ conv_gemma_2 = Conversation(
     offset=0,
     sep_style=SeparatorStyle.GEMMA_2,
     stop_token_ids=None,
-    sep='<start_of_turn>model\n',
-    sep2='<start_of_turn>user\n'
+    sep='\n<start_of_turn>model\n',
+    sep2='\n<start_of_turn>user\n'
 )
 tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
-model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
+# model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
 prompt = "What is your favorite condiment?"
 tokenizer.apply_chat_template(
                 [{'role': 'user', 'content': prompt}],

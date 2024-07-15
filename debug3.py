@@ -18,6 +18,7 @@ import re
 import random
 import shortuuid
 from tqdm import tqdm
+import gc
 
 import torch
 import torch.nn as nn
@@ -30,12 +31,15 @@ from transformers import Gemma2Config, Gemma2ForCausalLM
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
+from safetensors import safe_open
+from safetensors.torch import load_file as safe_load_file
+from safetensors.torch import save_file as safe_save_file
 
 USE_TRANSFORMERS_TRAINER = True
 if USE_TRANSFORMERS_TRAINER:
     from transformers.trainer import has_length, is_sagemaker_mp_enabled, \
         PreTrainedModel, TRAINING_ARGS_NAME, \
-        SAFE_WEIGHTS_NAME, WEIGHTS_NAME
+        SAFE_WEIGHTS_NAME, WEIGHTS_NAME, WEIGHTS_INDEX_NAME, SAFE_WEIGHTS_INDEX_NAME
     if is_sagemaker_mp_enabled():
         import smdistributed.modelparallel.torch as smp
 else: # using deepspeed (out of memory)
@@ -2406,52 +2410,76 @@ def train_with_deepspeed():
                 model_to_save.config.to_json_file(output_config_file)
                 tokenizer.save_vocabulary(training_args.output_dir)
 
+
+def load_sharded_checkpoint(model, folder, strict=True, prefer_safe=True):
+    # Load the index
+    safe_index_file = os.path.join(folder, SAFE_WEIGHTS_INDEX_NAME)
+    with open(safe_index_file, "r", encoding="utf-8") as f:
+        index = json.load(f)
+
+    shard_files = list(set(index["weight_map"].values()))
+    for shard_file in shard_files:
+        state_dict = safe_load_file(os.path.join(folder, shard_file))
+        if 'model.embed_tokens.weight' in state_dict:
+            state_dict['model.lm_head.weight'] = state_dict['model.embed_tokens.weight'].clone()
+        model.load_state_dict(state_dict, strict=False)
+
+        # Make sure memory is freed before we load the next state dict.
+        del state_dict
+        gc.collect()
+
+
 def eval():
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune/checkpoint-1600'
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2/checkpoint-1400'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune/'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
+    conv_version = 'llama_3'
+    gpu_id = 0
+    eot_str = "<|eot_id|>"
+
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
+    conv_version = 'gemma_2'
+    gpu_id = 1
+    eot_str = "<end_of_turn>"
+
     cache_dir = '/data/zhongz2/data/cache_dir'
-    model_name = 'llava_llama_3_debug'
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name_or_path,
-        use_fast=False
-    )
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
-    device = torch.device("cuda:0")
+    device = torch.device(f"cuda:{gpu_id}")
     kwargs = {
-        "device_map": "cuda:0",
-        "attn_implementation": "flash_attention_2",
+        "device_map": f"cuda:{gpu_id}",
         "torch_dtype": torch.float16
     }
     cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
-    model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, **kwargs)
+    if conv_version == 'llama_3':
+        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
+    elif conv_version == 'gemma_2':
+        model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
     model.initialize_vision_modules(device=device, dtype=torch.float16)
     model.to(device)
     model.eval()
-    from transformers.modeling_utils import load_sharded_checkpoint
+    # from transformers.modeling_utils import load_sharded_checkpoint
     load_sharded_checkpoint(model, model_name_or_path)
 
     # Custom dataset class
     class CustomDataset(torch.utils.data.Dataset):
-        def __init__(self, questions, image_folder, tokenizer, image_processor, model_config):
+        def __init__(self, questions, image_folder, tokenizer, image_processor, conversation, model_config):
             self.questions = questions
             self.image_folder = image_folder
             self.tokenizer = tokenizer
             self.image_processor = image_processor
             self.model_config = model_config
-            system = "You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language."
             self.input_ids = []
             for index in range(len(self.questions)):
+                messages = [{'role': 'system', 'content': conversation.system}] if conversation.sep_style == SeparatorStyle.LLAMA_3 else []
+                messages.append({'role': 'user', 'content': DEFAULT_IMAGE_TOKEN + '\n' + self.questions[index]['text']})
                 prompt = self.tokenizer.apply_chat_template(
-                    [
-                        {'role': 'system', 'content': system},
-                        {'role': 'user', 'content': DEFAULT_IMAGE_TOKEN + '\n' + self.questions[index]['text']}
-                    ],
+                    messages,
                     tokenize=False,
                     add_generation_prompt=True
                 )
-                if index < 5:
+                if index == 0:
                     print(prompt)
                 self.input_ids.append(
                     tokenizer_image_token(prompt, self.tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt')
@@ -2480,28 +2508,65 @@ def eval():
 
 
     # DataLoader
-    def create_data_loader(questions, image_folder, tokenizer, image_processor, model_config, batch_size=1, num_workers=1):
+    def create_data_loader(questions, image_folder, tokenizer, image_processor, conversation, model_config, batch_size=1, num_workers=1):
         assert batch_size == 1, "batch_size must be 1"
-        dataset = CustomDataset(questions, image_folder, tokenizer, image_processor, model_config)
+        dataset = CustomDataset(questions, image_folder, tokenizer, image_processor, conversation, model_config)
         data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, collate_fn=collate_fn)
         return data_loader
 
+
+
+    if conv_version == 'plain':  # for pretrain
+        conv_llava = Conversation(
+            system="",
+            roles=("", ""),
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.PLAIN,
+            sep="\n",
+        )
+    elif conv_version == 'llama_3':
+        conv_llava = Conversation(
+            system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+            roles=("user", "assistant"),
+            version="llama_3",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
+    elif conv_version == 'gemma_2': 
+        conv_llava = Conversation(
+            system="",
+            roles=("user", "model"),
+            version="gemma_2",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.GEMMA_2,
+            stop_token_ids=None,
+            sep='\n<start_of_turn>model\n',
+            sep2='\n<start_of_turn>user\n'
+        )   
+    else:
+        raise ValueError("wrong conv_version")
 
     eval_dir = os.path.join('/lscratch', os.environ['SLURM_JOB_ID'], 'eval')
     question_file = os.path.join(eval_dir, 'textvqa/llava_textvqa_val_v051_ocr.jsonl')
     questions = [json.loads(q) for q in open(os.path.expanduser(question_file), "r")]
     image_folder = os.path.join(eval_dir, 'textvqa/train_images')
-    answers_file = os.path.join(eval_dir, f'textvqa/answer_file_{model_name}.jsonl')
+    answers_file = os.path.join(eval_dir, f'textvqa/{model_name_or_path}/answer_file.jsonl')
     answers_file = os.path.expanduser(answers_file)
     os.makedirs(os.path.dirname(answers_file), exist_ok=True)
     ans_file = open(answers_file, "w")
 
-    data_loader = create_data_loader(questions, image_folder, tokenizer, model.image_processor, model.config)
+    data_loader = create_data_loader(questions, image_folder, tokenizer, model.image_processor, conv_llava, model.config)
 
 
     terminators = [
         tokenizer.eos_token_id,
-        tokenizer.convert_tokens_to_ids("<|eot_id|>")
+        tokenizer.convert_tokens_to_ids(eot_str)
     ]
 
     temperature = 0
@@ -2510,15 +2575,13 @@ def eval():
     max_new_tokens = 128
 
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
-        idx = line["question_id"]
-        cur_prompt = line["text"]
 
-        input_ids = input_ids.to(device='cuda', non_blocking=True)
+        input_ids = input_ids.to(device=device, non_blocking=True)
 
         with torch.inference_mode():
             output_ids = model.generate(
                 input_ids,
-                images=image_tensor.to(dtype=torch.float16, device='cuda', non_blocking=True),
+                images=image_tensor.to(dtype=torch.float16, device=device, non_blocking=True),
                 image_sizes=image_sizes,
                 do_sample=True if temperature > 0 else False,
                 temperature=temperature,
@@ -2531,12 +2594,10 @@ def eval():
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
 
-        ans_id = shortuuid.uuid()
-        ans_file.write(json.dumps({"question_id": idx,
-                                   "prompt": cur_prompt,
+        ans_file.write(json.dumps({"question_id": line["question_id"],
+                                   "prompt": line["text"],
                                    "text": outputs,
-                                   "answer_id": ans_id,
-                                   "model_id": model_name,
+                                   "answer_id": shortuuid.uuid(),
                                    "metadata": {}}) + "\n")
     ans_file.close()
 
@@ -2606,8 +2667,8 @@ def train_with_hf_trainer():
             offset=0,
             sep_style=SeparatorStyle.GEMMA_2,
             stop_token_ids=None,
-            sep='<start_of_turn>model\n',
-            sep2='<start_of_turn>user\n'
+            sep='\n<start_of_turn>model\n',
+            sep2='\n<start_of_turn>user\n'
         )   
     else:
         raise ValueError("wrong conv_version")

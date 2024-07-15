@@ -29,7 +29,7 @@ FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}
 FINETUNE_DATA="${JSON_FOLDER}/llava_med_instruct_60k_cleaned.json ${JSON_FOLDER}/llava_image_tune_cleaned.json"
 # PRETRAIN_DATA="${JSON_FOLDER}/llava_image_debug1.json"
 # FINETUNE_DATA="${JSON_FOLDER}/llava_image_tune_cleaned_debug1.json"
-save_steps=100
+save_steps=5
 num_train_epochs=1
 
 
@@ -51,7 +51,7 @@ output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/fine
 
 conv_version=gemma_2
 model_name_or_path="google/gemma-2-9b-it"
-output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_${conv_version}
+output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_${conv_version}_fixed
 pretrain_ckpt_path=
 
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi
@@ -108,7 +108,7 @@ torchrun \
     --log_level debug \
     --conv_version ${conv_version} \
     ${pretrain_ckpt_path} \
-    2>&1 | tee log_debug3_finetune_${conv_version}.txt
+    2>&1 | tee log_debug3_finetune_${conv_version}_fixed.txt
 
 exit;
 --log_level debug \
