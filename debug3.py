@@ -1280,6 +1280,11 @@ class DebugLlavaForCausalLM(LlamaForCausalLM):
         if _position_ids is None:
             position_ids = None
 
+        print('position_ids', position_ids.shape if position_ids is not None else 'None')
+        print('attention_mask', attention_mask.shape if attention_mask is not None else 'None')
+        print('past_key_values', past_key_values.shape if past_key_values is not None else 'None')
+        print('new_input_embeds', new_input_embeds.shape if new_input_embeds is not None else 'None')
+        print('new_labels', new_labels.shape if new_labels is not None else 'None')
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
 
@@ -1563,6 +1568,11 @@ class DebugLlavaGemma2ForCausalLM(Gemma2ForCausalLM):
         if _position_ids is None:
             position_ids = None
 
+        # print('prepare position_ids', position_ids.shape if position_ids is not None else 'None')
+        # print('prepare attention_mask', attention_mask.shape if attention_mask is not None else 'None')
+        # print('prepare past_key_values', past_key_values.shape if past_key_values is not None else 'None')
+        # print('prepare new_input_embeds', new_input_embeds.shape if new_input_embeds is not None else 'None')
+        # print('prepare new_labels', new_labels.shape if new_labels is not None else 'None')
         return None, position_ids, attention_mask, past_key_values, new_input_embeds, new_labels
 
 
@@ -2430,16 +2440,19 @@ def load_sharded_checkpoint(model, folder, strict=True, prefer_safe=True):
 
 
 def eval():
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune/'
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
     conv_version = 'llama_3'
-    gpu_id = 0
+    gpu_id = 1
     eot_str = "<|eot_id|>"
 
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/'
     conv_version = 'gemma_2'
-    gpu_id = 1
+    gpu_id = 0
     eot_str = "<end_of_turn>"
 
     cache_dir = '/data/zhongz2/data/cache_dir'
@@ -2592,7 +2605,7 @@ def eval():
                 eos_token_id=terminators,
                 use_cache=True)
 
-        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True)[0].strip()
+        outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
 
         ans_file.write(json.dumps({"question_id": line["question_id"],
                                    "prompt": line["text"],
@@ -2601,6 +2614,13 @@ def eval():
                                    "metadata": {}}) + "\n")
     ans_file.close()
 
+    if False:
+        with torch.inference_mode():
+            output_ids = model.generate(
+                input_ids,
+                images=image_tensor.to(dtype=torch.float16, device=device, non_blocking=True),
+                image_sizes=image_sizes,
+                max_new_tokens=max_new_tokens)
     print(f'''
     python -m llava.eval.eval_textvqa \
     --annotation-file {eval_dir}/textvqa/TextVQA_0.5.1_val.json \
