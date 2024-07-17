@@ -34,7 +34,7 @@ num_train_epochs=1
 
 
 per_device_train_batch_size=2
-gradient_accumulation_steps=8
+gradient_accumulation_steps=4
 learning_rate=2e-5
 data_type_str="--bf16 True --tf32 True"
 deepspeed_config="zero3_offload_param"
@@ -105,7 +105,6 @@ torchrun \
     --gradient_checkpointing True \
     --image_aspect_ratio anyres \
     --model_max_length 8192 \
-    --log_level debug \
     --conv_version ${conv_version} \
     ${pretrain_ckpt_path} \
     2>&1 | tee log_debug3_finetune_${conv_version}_fixed.txt

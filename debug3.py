@@ -1555,6 +1555,11 @@ class DebugLlavaGemma2ForCausalLM(Gemma2ForCausalLM):
 
         new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
 
+        # print('prepare0 position_ids', position_ids.shape if position_ids is not None else 'None')
+        # print('prepare0 attention_mask', attention_mask.shape if attention_mask is not None else 'None')
+        # print('prepare0 past_key_values', past_key_values.shape if past_key_values is not None else 'None')
+        # print('prepare0 new_input_embeds', new_input_embeds.shape if new_input_embeds is not None else 'None')
+        # print('prepare0 new_labels', new_labels_padded.shape if new_labels_padded is not None else 'None')
         if _labels is None:
             new_labels = None
         else:
@@ -1623,16 +1628,19 @@ class DebugLlavaGemma2ForCausalLM(Gemma2ForCausalLM):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
+        # print('DebugLlavaGemma2ForCausalLM0 generate attention_mask', attention_mask.shape if attention_mask is not None else 'None')
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, image_sizes=image_sizes)
         else:
             inputs_embeds = self.model.embed_tokens(inputs)
-
+        # print('DebugLlavaGemma2ForCausalLM1 generate attention_mask', attention_mask.shape if attention_mask is not None else 'None')
         return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)
         image_sizes = kwargs.pop("image_sizes", None)
+        attention_mask = kwargs['attention_mask'] if 'attention_mask' in kwargs else None
+        print('DebugLlavaGemma2ForCausalLM0 prepare_inputs_for_generation attention_mask', attention_mask.shape if attention_mask is not None else 'None')
         inputs = super().prepare_inputs_for_generation(input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs)
         if images is not None:
             inputs["images"] = images
@@ -2439,8 +2447,24 @@ def load_sharded_checkpoint(model, folder, strict=True, prefer_safe=True):
         gc.collect()
 
 
+def test_gemma2(cache_dir):
+    print('=========== begin test gemma2')
+    device = torch.device('cuda:1')
+    model1 = Gemma2ForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir, device_map=device, torch_dtype=torch.float16, attn_implementation="flash_attention_2")
+    tokenizer1 = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
+
+    prompt = "What is your favorite condiment?"
+    inputs = tokenizer1(prompt, return_tensors="pt")
+
+    # Generate
+    generate_ids = model1.generate(inputs.input_ids.to(device), max_length=64)
+    outputs = tokenizer1.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+    print(outputs)
+    print('=========== end test gemma2')
+
 def eval():
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    cache_dir = '/data/zhongz2/data/cache_dir'
 
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune/'
@@ -2450,12 +2474,13 @@ def eval():
     eot_str = "<|eot_id|>"
 
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-600'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-300'
     conv_version = 'gemma_2'
     gpu_id = 0
     eot_str = "<end_of_turn>"
 
-    cache_dir = '/data/zhongz2/data/cache_dir'
+    # test_gemma2(cache_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
@@ -2585,7 +2610,7 @@ def eval():
     temperature = 0
     top_p = None
     num_beams = 1
-    max_new_tokens = 128
+    max_new_tokens = 4096
 
     for (input_ids, image_tensor, image_sizes), line in tqdm(zip(data_loader, questions), total=len(questions)):
 
@@ -2603,24 +2628,23 @@ def eval():
                 max_new_tokens=max_new_tokens,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=terminators,
-                use_cache=True)
+                use_cache=False)
 
         outputs = tokenizer.batch_decode(output_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0].strip()
-
+        print('Q: ', line["text"])
+        print('A: ', outputs)
+        print()
         ans_file.write(json.dumps({"question_id": line["question_id"],
                                    "prompt": line["text"],
                                    "text": outputs,
                                    "answer_id": shortuuid.uuid(),
                                    "metadata": {}}) + "\n")
+    
+    # import pdb
+    # pdb.set_trace()
+    
     ans_file.close()
 
-    if False:
-        with torch.inference_mode():
-            output_ids = model.generate(
-                input_ids,
-                images=image_tensor.to(dtype=torch.float16, device=device, non_blocking=True),
-                image_sizes=image_sizes,
-                max_new_tokens=max_new_tokens)
     print(f'''
     python -m llava.eval.eval_textvqa \
     --annotation-file {eval_dir}/textvqa/TextVQA_0.5.1_val.json \
@@ -2867,4 +2891,5 @@ def test_wds():
 if __name__ == '__main__':
     train_with_hf_trainer()
     # train_with_deepspeed()
+    # eval()
     
