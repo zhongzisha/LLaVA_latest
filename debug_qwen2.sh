@@ -40,7 +40,7 @@ wait
 
 # srun --export ALL --jobid $SLURM_JOB_ID bash debug2.sh   # pretrain
 # srun --export ALL --jobid $SLURM_JOB_ID bash debug2_v3.sh  # finetune
-srun --export ALL --jobid $SLURM_JOB_ID bash debug4_gemma2.sh  # finetune
+srun --export ALL --jobid $SLURM_JOB_ID bash debug4_qwen2.sh  # finetune
 
 wait
 exit;

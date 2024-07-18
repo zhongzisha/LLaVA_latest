@@ -28,6 +28,7 @@ import transformers
 from transformers import AutoConfig, AutoTokenizer, AutoModelForCausalLM
 from transformers import LlamaConfig, LlamaForCausalLM
 from transformers import Gemma2Config, Gemma2ForCausalLM
+from transformers import Qwen2Config, Qwen2ForCausalLM
 from transformers import CLIPVisionModel, CLIPImageProcessor, CLIPVisionConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
@@ -60,6 +61,7 @@ class SeparatorStyle(Enum):
     PLAIN = auto()
     LLAMA_3 = auto()
     GEMMA_2 = auto()
+    QWEN_2 = auto()
 
 
 @dataclass
@@ -120,14 +122,256 @@ def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX
     return input_ids
 
 
-
-def preprocess_llama_3(
-    sources,
-    tokenizer: transformers.PreTrainedTokenizer,
-    conversation: Conversation,
-    has_image: bool = False
+def preprocess_multimodal(
+    sources: Sequence[str],
 ) -> Dict:
-    conv = conversation
+
+    for source in sources:
+        for sentence in source:
+            if DEFAULT_IMAGE_TOKEN in sentence['value']:
+                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
+                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
+                sentence['value'] = sentence['value'].strip()
+
+    return sources
+
+
+data_path = ['/Users/zhongz2/down/llava_image_tune_cleaned_debug1.json']
+image_folder = '/Users/zhongz2/down/'
+list_data_dict = []
+for data in data_path:
+    data = json.load(open(data, "r"))
+    for i in data:
+        i['id'] = len(list_data_dict)
+        list_data_dict.append(i)
+
+i = 0
+sources = list_data_dict[i]
+if isinstance(i, int):
+    sources = [sources]
+sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]))
+
+
+cache_dir = '/Users/zhongz2/down/cache_dir'
+model_max_length = 8192
+
+if False:
+    tokenizer = AutoTokenizer.from_pretrained(
+        'meta-llama/Meta-Llama-3-8B-Instruct',
+        cache_dir=cache_dir,
+        model_max_length=model_max_length,
+        padding_side="right",
+        use_fast=False,
+    )
+    tokenizer.unk_token = "<|reserved_special_token_0|>"
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.unk_token
+
+    conv_llama_3 = Conversation(
+        system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
+        roles=("user", "assistant"),
+        version="llama_3",
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.LLAMA_3,
+        stop_token_ids=[128009],
+        sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+        sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+    )
+
+    # For llama3
+    has_image = True
+    conversation = conv_llama_3
+    if True:
+        conv = conversation
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        # Apply prompt templates
+        conversations = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                # Skip the first one if it is not from human
+                source = source[1:]
+
+            messages = [{'role': 'system', 'content': conv.system}]
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+                messages.append({'role': role, 'content': sentence["value"]})
+            conversations.append(
+                tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                ))
+
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+
+        targets = input_ids.clone()
+
+        # Mask targets 
+        # sep = conv.sep + conv.roles[1] + ": "
+        for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
+            total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+            rounds = conversation.split(conv.sep)
+            cur_len = 0 
+            target[:] = IGNORE_INDEX
+            for i, rou in enumerate(rounds):
+                if rou == "":
+                    break
+                
+                parts = rou.split(conv.sep2)
+                rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+                # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
+                if i!=0:
+                    rou_len -= 1
+                else:
+                    cur_len += rou_len
+                    continue
+
+                ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+                target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
+
+                cur_len += rou_len    
+
+            if cur_len < tokenizer.model_max_length:
+                if cur_len != total_len:
+                    target[:] = IGNORE_INDEX
+                    print(
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                        f" (ignored)"
+                    )
+                    
+        if input_ids[0][0] != tokenizer.bos_token_id:
+            input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+            targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+
+
+
+
+
+if False:
+    conv_gemma_2 = Conversation(
+        system="",
+        roles=("user", "model"),
+        version="gemma_2",
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.GEMMA_2,
+        stop_token_ids=None,
+        sep='\n<start_of_turn>model\n',
+        sep2='\n<start_of_turn>user\n'
+    )
+    tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
+    # model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
+    prompt = "What is your favorite condiment?"
+    tokenizer.apply_chat_template(
+                    [{'role': 'user', 'content': prompt}],
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+
+    # For gemma2
+    has_image = True
+    conversation = conv_gemma_2
+    if True:
+        conv = conversation
+        roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+        # Apply prompt templates
+        conversations = []
+        for i, source in enumerate(sources):
+            if roles[source[0]["from"]] != conv.roles[0]:
+                # Skip the first one if it is not from human
+                source = source[1:]
+
+            # messages = [{'role': 'system', 'content': conv.system}]
+            messages = []
+            for j, sentence in enumerate(source):
+                role = roles[sentence["from"]]
+                assert role == conv.roles[j % 2], f"{i}"
+                messages.append({'role': role, 'content': sentence["value"]})
+            conversations.append(
+                tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True
+                ))
+
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+
+        targets = input_ids.clone()
+
+        # Mask targets 
+        for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
+            total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+            rounds = conversation.split(conv.sep)
+            cur_len = 0 
+            target[:] = IGNORE_INDEX
+            for i, rou in enumerate(rounds):
+                if rou == "":
+                    break
+                
+                parts = rou.split(conv.sep2)
+                rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+                # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
+                if i!=0:
+                    rou_len -= 1
+                else:
+                    cur_len += rou_len
+                    continue
+
+                ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
+                target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
+
+                cur_len += rou_len    
+
+            if cur_len < tokenizer.model_max_length:
+                if cur_len != total_len:
+                    target[:] = IGNORE_INDEX
+                    print(
+                        f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                        f" (ignored)"
+                    )
+                    
+        if input_ids[0][0] != tokenizer.bos_token_id:
+            input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+            targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+
+# Qwen2
+
+
+
+if True:
+    conv_qwen_2 = Conversation(
+        system="You are a helpful assistant.",
+        roles=("user", "assistant"),
+        version="qwen_2",
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.QWEN_2,
+        stop_token_ids=None,
+        sep='\n<|im_start|>assistant\n',
+        sep2='\n<|im_start|>user\n'
+    )
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-7B-Instruct", cache_dir=cache_dir)
+    tokenizer.bos_token = '<|im_start|>'
+    if tokenizer.unk_token is None:
+        tokenizer.unk_token = tokenizer.eos_token
+    # model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
+    prompt = "What is your favorite condiment?"
+    tokenizer.apply_chat_template(
+                    [{'role': 'system', 'content': conv_qwen_2.system},
+                    {'role': 'user', 'content': prompt}],
+                    tokenize=False,
+                    add_generation_prompt=True
+                )
+
+    # For gemma2
+    has_image = True
+    conv = conv_qwen_2
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
     # Apply prompt templates
@@ -160,8 +404,7 @@ def preprocess_llama_3(
         ).input_ids
     targets = input_ids.clone()
 
-    # Mask targets 
-    # sep = conv.sep + conv.roles[1] + ": "
+    # Mask targets
     for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
         total_len = int(target.ne(tokenizer.pad_token_id).sum())
 
@@ -173,10 +416,11 @@ def preprocess_llama_3(
                 break
             
             parts = rou.split(conv.sep2)
-            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))
             # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
             if i!=0:
-                rou_len -= 1
+                # rou_len -= 1
+                pass
             else:
                 cur_len += rou_len
                 continue
@@ -193,139 +437,7 @@ def preprocess_llama_3(
                     f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
                     f" (ignored)"
                 )
-                
-    if input_ids[0][0] != tokenizer.bos_token_id:
-        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
-        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
 
-    return dict(
-        input_ids=input_ids,
-        labels=targets,
-    )
-
-
-
-def preprocess_multimodal(
-    sources: Sequence[str],
-) -> Dict:
-
-    for source in sources:
-        for sentence in source:
-            if DEFAULT_IMAGE_TOKEN in sentence['value']:
-                sentence['value'] = sentence['value'].replace(DEFAULT_IMAGE_TOKEN, '').strip()
-                sentence['value'] = DEFAULT_IMAGE_TOKEN + '\n' + sentence['value']
-                sentence['value'] = sentence['value'].strip()
-
-    return sources
-
-
-data_path = ['/Users/zhongz2/down/llava_image_tune_cleaned_debug1.json']
-image_folder = '/Users/zhongz2/down/'
-list_data_dict = []
-for data in data_path:
-    data = json.load(open(data, "r"))
-    for i in data:
-        i['id'] = len(list_data_dict)
-        list_data_dict.append(i)
-
-i = 0
-sources = list_data_dict[i]
-if isinstance(i, int):
-    sources = [sources]
-sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]))
-
-
-model_name_or_path = 'meta-llama/Meta-Llama-3-8B-Instruct'
-cache_dir = '/Users/zhongz2/down/cache_dir'
-model_max_length = 8192
-
-tokenizer = AutoTokenizer.from_pretrained(
-    model_name_or_path,
-    cache_dir=cache_dir,
-    model_max_length=model_max_length,
-    padding_side="right",
-    use_fast=False,
-)
-tokenizer.unk_token = "<|reserved_special_token_0|>"
-if tokenizer.pad_token is None:
-    tokenizer.pad_token = tokenizer.unk_token
-
-conv_llama_3 = Conversation(
-    system="You are a helpful language and vision assistant. " "You are able to understand the visual content that the user provides, " "and assist the user with a variety of tasks using natural language.",
-    roles=("user", "assistant"),
-    version="llama_3",
-    messages=[],
-    offset=0,
-    sep_style=SeparatorStyle.LLAMA_3,
-    stop_token_ids=[128009],
-    sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
-    sep2='<|start_header_id|>user<|end_header_id|>\n\n'
-)
-
-# For llama3
-has_image = True
-conversation = conv_llama_3
-if True:
-    conv = conversation
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        messages = [{'role': 'system', 'content': conv.system}]
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            assert role == conv.roles[j % 2], f"{i}"
-            messages.append({'role': role, 'content': sentence["value"]})
-        conversations.append(
-            tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            ))
-
-    input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
-
-    targets = input_ids.clone()
-
-    # Mask targets 
-    # sep = conv.sep + conv.roles[1] + ": "
-    for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
-        rounds = conversation.split(conv.sep)
-        cur_len = 0 
-        target[:] = IGNORE_INDEX
-        for i, rou in enumerate(rounds):
-            if rou == "":
-                break
-            
-            parts = rou.split(conv.sep2)
-            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
-            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
-            if i!=0:
-                rou_len -= 1
-            else:
-                cur_len += rou_len
-                continue
-
-            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
-            target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
-
-            cur_len += rou_len    
-
-        if cur_len < tokenizer.model_max_length:
-            if cur_len != total_len:
-                target[:] = IGNORE_INDEX
-                print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
-                )
-                
     if input_ids[0][0] != tokenizer.bos_token_id:
         input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
         targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
@@ -333,93 +445,4 @@ if True:
 
 
 
-
-
-conv_gemma_2 = Conversation(
-    system="",
-    roles=("user", "model"),
-    version="gemma_2",
-    messages=[],
-    offset=0,
-    sep_style=SeparatorStyle.GEMMA_2,
-    stop_token_ids=None,
-    sep='\n<start_of_turn>model\n',
-    sep2='\n<start_of_turn>user\n'
-)
-tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
-# model = AutoModelForCausalLM.from_pretrained("google/gemma-2-9b-it", cache_dir=cache_dir)
-prompt = "What is your favorite condiment?"
-tokenizer.apply_chat_template(
-                [{'role': 'user', 'content': prompt}],
-                tokenize=False,
-                add_generation_prompt=True
-            )
-
-# For gemma2
-has_image = True
-conversation = conv_gemma_2
-if True:
-    conv = conversation
-    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
-
-    # Apply prompt templates
-    conversations = []
-    for i, source in enumerate(sources):
-        if roles[source[0]["from"]] != conv.roles[0]:
-            # Skip the first one if it is not from human
-            source = source[1:]
-
-        # messages = [{'role': 'system', 'content': conv.system}]
-        messages = []
-        for j, sentence in enumerate(source):
-            role = roles[sentence["from"]]
-            assert role == conv.roles[j % 2], f"{i}"
-            messages.append({'role': role, 'content': sentence["value"]})
-        conversations.append(
-            tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            ))
-
-    input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
-
-    targets = input_ids.clone()
-
-    # Mask targets 
-    for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
-        total_len = int(target.ne(tokenizer.pad_token_id).sum())
-
-        rounds = conversation.split(conv.sep)
-        cur_len = 0 
-        target[:] = IGNORE_INDEX
-        for i, rou in enumerate(rounds):
-            if rou == "":
-                break
-            
-            parts = rou.split(conv.sep2)
-            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
-            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
-            if i!=0:
-                rou_len -= 1
-            else:
-                cur_len += rou_len
-                continue
-
-            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
-            target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
-
-            cur_len += rou_len    
-
-        if cur_len < tokenizer.model_max_length:
-            if cur_len != total_len:
-                target[:] = IGNORE_INDEX
-                print(
-                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
-                    f" (ignored)"
-                )
-                
-    if input_ids[0][0] != tokenizer.bos_token_id:
-        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
-        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
 

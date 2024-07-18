@@ -48,11 +48,23 @@ conv_version=llama_3
 model_name_or_path="meta-llama/Meta-Llama-3-8B-Instruct"
 pretrain_ckpt_path=     # "--pretrain_ckpt_path /data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/mm_projector.bin"
 output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2
+MASTER_PORT=25199
 
 conv_version=gemma_2
 model_name_or_path="google/gemma-2-9b-it"
 output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_${conv_version}_fixed
 pretrain_ckpt_path=
+MASTER_PORT=25200
+
+
+conv_version=qwen_2
+model_name_or_path="Qwen/Qwen2-7B-Instruct"
+output_dir=/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_${conv_version}
+pretrain_ckpt_path=
+MASTER_PORT=25201
+per_device_train_batch_size=2
+gradient_accumulation_steps=8
+
 
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi
 
@@ -65,7 +77,6 @@ else
     NNODES=1
     GPUS_PER_NODE=2
 fi
-MASTER_PORT=25199
 
 torchrun \
     --nproc_per_node $GPUS_PER_NODE \
