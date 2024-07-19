@@ -2906,28 +2906,37 @@ def test_gemma2(cache_dir):
     print('=========== end test gemma2')
 
 def eval():
+    import sys
+    if len(sys.argv) != 3:
+        print('conv_version gpu_id')
+        sys.exit(-1)
+    conv_version = sys.argv[1]
+    gpu_id = int(float(sys.argv[2]))
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     cache_dir = '/data/zhongz2/data/cache_dir'
 
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
-    conv_version = 'llama_3'
-    gpu_id = 1
-    eot_str = "<|eot_id|>"
+    if conv_version == 'llama_3':
+        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
+        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
+        conv_version = 'llama_3'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2/checkpoint-600'
+        # gpu_id = 1
+        eot_str = "<|eot_id|>"
+    elif conv_version == 'gemma_2':
+        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
+        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-1300/'
+        conv_version = 'gemma_2'
+        # gpu_id = 1
+        eot_str = "<end_of_turn>"
 
-    # model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
-    # model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-600'
-    # model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-100/'
-    # conv_version = 'gemma_2'
-    # gpu_id = 0
-    # eot_str = "<end_of_turn>"
-
-    # test_gemma2(cache_dir)
-
-    conv_version = 'qwen_2'
-    model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}'
-    gpu_id = 0
-    eot_str = "<|im_end|>"
+        # test_gemma2(cache_dir)
+    elif conv_version == 'qwen_2':
+        conv_version = 'qwen_2'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}/checkpoint-1800'
+        # gpu_id = 0
+        eot_str = "<|im_end|>"
+    else:
+        raise ValueError("wrong conv_version")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
@@ -3382,7 +3391,7 @@ def test_wds():
 
 
 if __name__ == '__main__':
-    train_with_hf_trainer()
+    # train_with_hf_trainer()
     # train_with_deepspeed()
-    # eval()
+    eval()
     
