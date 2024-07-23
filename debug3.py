@@ -36,6 +36,7 @@ from transformers.generation.utils import GenerateOutput
 from safetensors import safe_open
 from safetensors.torch import load_file as safe_load_file
 from safetensors.torch import save_file as safe_save_file
+from transformers.cache_utils import HybridCache
 
 USE_TRANSFORMERS_TRAINER = True
 if USE_TRANSFORMERS_TRAINER:
@@ -97,6 +98,7 @@ class SeparatorStyle(Enum):
     TWO = auto()
     PLAIN = auto()
     LLAMA_3 = auto()
+    LLAMA_3_1 = auto()
     GEMMA_2 = auto()
     QWEN_2 = auto()
 
@@ -264,6 +266,91 @@ def preprocess_llama_3(
         input_ids=input_ids,
         labels=targets,
     )
+
+
+def preprocess_llama_3_1(
+    sources,
+    tokenizer: transformers.PreTrainedTokenizer,
+    conversation: Conversation,
+    has_image: bool = False
+) -> Dict:
+    conv = conversation
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+
+    # Apply prompt templates
+    conversations = []
+    for i, source in enumerate(sources):
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source = source[1:]
+
+        messages = [{'role': 'system', 'content': conv.system}]
+        for j, sentence in enumerate(source):
+            role = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            messages.append({'role': role, 'content': sentence["value"]})
+        conversations.append(
+            tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            ))
+    if has_image:
+        input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors='pt') for prompt in conversations], dim=0)
+    else:
+        input_ids = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
+    targets = input_ids.clone()
+
+    # Mask targets 
+    # sep = conv.sep + conv.roles[1] + ": "
+    for j, (conversation, target, input_id) in enumerate(zip(conversations, targets, input_ids)):
+        total_len = int(target.ne(tokenizer.pad_token_id).sum())
+
+        rounds = conversation.split(conv.sep)
+        cur_len = 0 
+        target[:] = IGNORE_INDEX
+        for i, rou in enumerate(rounds):
+            if rou == "":
+                break
+            
+            parts = rou.split(conv.sep2)
+            rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
+            # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
+            if i!=0:
+                # rou_len -= 1
+                pass
+            else:
+                cur_len += rou_len
+                continue
+
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) #  - 1
+            target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
+
+            cur_len += rou_len    
+
+        if cur_len < tokenizer.model_max_length:
+            if cur_len != total_len:
+                target[:] = IGNORE_INDEX
+                print(
+                    f"WARNING: tokenization mismatch: {cur_len} vs. {total_len}."
+                    f" (ignored)"
+                )
+                
+    if input_ids[0][0] != tokenizer.bos_token_id:
+        input_ids = [torch.cat([torch.LongTensor([tokenizer.bos_token_id]), i]) for i in input_ids]
+        targets = [torch.cat([torch.LongTensor([IGNORE_INDEX]), i]) for i in targets]
+
+    return dict(
+        input_ids=input_ids,
+        labels=targets,
+    )
+
 
 
 
@@ -453,6 +540,8 @@ def preprocess(
         return preprocess_plain(sources, tokenizer)
     if conversation.sep_style == SeparatorStyle.LLAMA_3:
         return preprocess_llama_3(sources, tokenizer, conversation=conversation, has_image=has_image)
+    if conversation.sep_style == SeparatorStyle.LLAMA_3_1:
+        return preprocess_llama_3_1(sources, tokenizer, conversation=conversation, has_image=has_image)
     if conversation.sep_style == SeparatorStyle.GEMMA_2:
         return preprocess_gemma_2(sources, tokenizer, conversation=conversation, has_image=has_image)
     if conversation.sep_style == SeparatorStyle.QWEN_2:
@@ -1718,19 +1807,17 @@ class DebugLlavaGemma2ForCausalLM(Gemma2ForCausalLM):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
-        # print('DebugLlavaGemma2ForCausalLM0 generate attention_mask', attention_mask.shape if attention_mask is not None else 'None')
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, image_sizes=image_sizes)
         else:
             inputs_embeds = self.model.embed_tokens(inputs)
-        # print('DebugLlavaGemma2ForCausalLM1 generate attention_mask', attention_mask.shape if attention_mask is not None else 'None')
+        
         return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)
         image_sizes = kwargs.pop("image_sizes", None)
-        # attention_mask = kwargs['attention_mask'] if 'attention_mask' in kwargs else None
-        # print('DebugLlavaGemma2ForCausalLM0 prepare_inputs_for_generation attention_mask', attention_mask.shape if attention_mask is not None else 'None')
+        print('past_key_values', past_key_values)
         inputs = super().prepare_inputs_for_generation(input_ids, past_key_values=past_key_values, inputs_embeds=inputs_embeds, **kwargs)
         if images is not None:
             inputs["images"] = images
@@ -2919,12 +3006,11 @@ def eval():
         model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
         model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
         conv_version = 'llama_3'
-        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2/checkpoint-600'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2'
         # gpu_id = 1
         eot_str = "<|eot_id|>"
     elif conv_version == 'gemma_2':
-        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2/checkpoint-1400'
-        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/checkpoint-1300/'
+        model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/'
         conv_version = 'gemma_2'
         # gpu_id = 1
         eot_str = "<end_of_turn>"
@@ -2932,7 +3018,7 @@ def eval():
         # test_gemma2(cache_dir)
     elif conv_version == 'qwen_2':
         conv_version = 'qwen_2'
-        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}/checkpoint-1800'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}'
         # gpu_id = 0
         eot_str = "<|im_end|>"
     else:
@@ -3184,6 +3270,18 @@ def train_with_hf_trainer():
             sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
             sep2='<|start_header_id|>user<|end_header_id|>\n\n'
         )
+    elif model_args.conv_version == 'llama_3_1': # for fine tune
+        conv_llava = Conversation(
+            system="You are a pirate chatbot who always responds in pirate speak!",
+            roles=("user", "assistant"),
+            version="llama_3_1",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3_1,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
     elif model_args.conv_version == 'gemma_2': # for fine tune
         conv_llava = Conversation(
             system="",
@@ -3268,6 +3366,7 @@ def train_with_hf_trainer():
             def make_inputs_require_grad(module, input, output):
                 output.requires_grad_(True)
             model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
+        model.gradient_checkpointing_enable()
 
     data_args.image_processor = model.image_processor
     data_args.is_multimodal = True
@@ -3391,7 +3490,7 @@ def test_wds():
 
 
 if __name__ == '__main__':
-    # train_with_hf_trainer()
+    train_with_hf_trainer()
     # train_with_deepspeed()
-    eval()
+    # eval()
     

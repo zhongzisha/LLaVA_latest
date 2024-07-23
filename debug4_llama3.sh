@@ -154,7 +154,7 @@ rustup default 1.75*******
 
 vim /data/zhongz2/anaconda3/envs/th21_ds0144/lib/python3.11/site-packages/transformers/utils/import_utils.py
 
-
+find ./data -type f -name "*.zip" -exec mv {} . \;
 
 
 

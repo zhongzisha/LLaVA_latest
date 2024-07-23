@@ -10,7 +10,7 @@ if [ "$CLUSTER_NAME" == "FRCE" ]; then
 else
     MYTMP_DIR=/lscratch/$SLURM_JOB_ID
     DATA_ROOT=/data/zhongz2/data/LLaVA-Med/video
-    if [ "0" == "1" ]; then
+    if [ "1" == "1" ]; then
         source /data/zhongz2/anaconda3/bin/activate th21_ds0144
         module load CUDA/12.1
         module load cuDNN/8.9.2/CUDA-12
