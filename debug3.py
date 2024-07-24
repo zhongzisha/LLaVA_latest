@@ -3007,19 +3007,18 @@ def eval():
         model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
         conv_version = 'llama_3'
         model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2'
-        # gpu_id = 1
+        eot_str = "<|eot_id|>"
+    elif conv_version == 'llama_3_1':
+        conv_version = 'llama_3_1'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}/checkpoint-900'
         eot_str = "<|eot_id|>"
     elif conv_version == 'gemma_2':
         model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/'
         conv_version = 'gemma_2'
-        # gpu_id = 1
         eot_str = "<end_of_turn>"
-
-        # test_gemma2(cache_dir)
     elif conv_version == 'qwen_2':
         conv_version = 'qwen_2'
         model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}'
-        # gpu_id = 0
         eot_str = "<|im_end|>"
     else:
         raise ValueError("wrong conv_version")
@@ -3032,7 +3031,7 @@ def eval():
         "torch_dtype": torch.float16
     }
     cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
-    if conv_version == 'llama_3':
+    if conv_version == 'llama_3' or conv_version == 'llama_3_1':
         model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
     elif conv_version == 'gemma_2':
         model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
@@ -3118,6 +3117,18 @@ def eval():
             messages=[],
             offset=0,
             sep_style=SeparatorStyle.LLAMA_3,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
+    elif conv_version == 'llama_3_1':
+        conv_llava = Conversation(
+            system="You are a pirate chatbot who always responds in pirate speak!",
+            roles=("user", "assistant"),
+            version="llama_3_1",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3_1,
             stop_token_ids=[128009],
             sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
             sep2='<|start_header_id|>user<|end_header_id|>\n\n'
@@ -3490,7 +3501,7 @@ def test_wds():
 
 
 if __name__ == '__main__':
-    train_with_hf_trainer()
+    # train_with_hf_trainer()
     # train_with_deepspeed()
-    # eval()
+    eval()
     
