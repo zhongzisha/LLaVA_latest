@@ -3010,7 +3010,7 @@ def eval():
         eot_str = "<|eot_id|>"
     elif conv_version == 'llama_3_1':
         conv_version = 'llama_3_1'
-        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}/checkpoint-900'
+        model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_{conv_version}'
         eot_str = "<|eot_id|>"
     elif conv_version == 'gemma_2':
         model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_gemma_2_fixed/'
@@ -3033,8 +3033,8 @@ def eval():
     cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
     if conv_version == 'llama_3' or conv_version == 'llama_3_1':
         model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
-    elif conv_version == 'gemma_2':
-        model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
+    elif conv_version == 'gemma_2': # eager (official) or flash_attention_2
+        model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
     elif conv_version == 'qwen_2':
         model = DebugLlavaQwen2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
     model.initialize_vision_modules(device=device, dtype=torch.float16)
@@ -3501,7 +3501,7 @@ def test_wds():
 
 
 if __name__ == '__main__':
-    # train_with_hf_trainer()
+    train_with_hf_trainer()
     # train_with_deepspeed()
-    eval()
+    # eval()
     
