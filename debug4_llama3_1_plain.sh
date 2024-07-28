@@ -65,8 +65,8 @@ MASTER_PORT=25199
 # pretrain_ckpt_path=
 # MASTER_PORT=25201
 
-per_device_train_batch_size=8
-gradient_accumulation_steps=4
+per_device_train_batch_size=4
+gradient_accumulation_steps=8
 
 
 if [ ! -d ${output_dir} ]; then mkdir -p ${output_dir}; fi

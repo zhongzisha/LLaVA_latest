@@ -320,13 +320,13 @@ if False:
                 rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
                 # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
                 if i!=0:
-                    # rou_len -= 1
+                    rou_len -= 1
                     pass
                 else:
                     cur_len += rou_len
                     continue
 
-                ans_len = len(tokenizer_image_token(parts[0], tokenizer)) #  - 1
+                ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
                 target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
 
                 cur_len += rou_len    

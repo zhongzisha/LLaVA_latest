@@ -274,6 +274,7 @@ def preprocess_llama_3_1(
     conversation: Conversation,
     has_image: bool = False
 ) -> Dict:
+    print('llama_3_1 preprocess')
     conv = conversation
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
@@ -323,13 +324,13 @@ def preprocess_llama_3_1(
             rou_len = len(tokenizer_image_token(rou+conv.sep, tokenizer))  # if add_generation_prompt=True
             # rou_len = len(tokenizer_image_token(rou+conv.sep if i!=len(rounds)-1 else rou, tokenizer))  # 
             if i!=0:
-                # rou_len -= 1
+                rou_len -= 1
                 pass
             else:
                 cur_len += rou_len
                 continue
 
-            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) #  - 1
+            ans_len = len(tokenizer_image_token(parts[0], tokenizer)) - 1
             target[cur_len : cur_len + ans_len] = input_id[cur_len : cur_len + ans_len]
 
             cur_len += rou_len    
@@ -536,6 +537,7 @@ def preprocess(
     3. Tokenize the concatenated conversation;
     4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
     """
+    print('conversation.sep_style', conversation.sep_style)
     if conversation.sep_style == SeparatorStyle.PLAIN:
         return preprocess_plain(sources, tokenizer)
     if conversation.sep_style == SeparatorStyle.LLAMA_3:
@@ -805,6 +807,7 @@ class LazySupervisedDataset(Dataset):
 
             sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args)
         else:
+            print('no image')
             sources = copy.deepcopy([e["conversations"] for e in sources])
         
         data_dict = preprocess(sources, self.tokenizer, self.conversation, has_image=('image' in self.list_data_dict[i]))
@@ -3381,6 +3384,7 @@ def train_with_hf_trainer():
 
     data_args.image_processor = model.image_processor
     data_args.is_multimodal = True
+    print('conv_llava', conv_llava)
     data_module = make_supervised_data_module(tokenizer=tokenizer, conversation=conv_llava, data_args=data_args)
     print('len train dataset', len(data_module['train_dataset']))
 
