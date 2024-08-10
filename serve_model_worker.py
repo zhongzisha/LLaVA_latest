@@ -87,8 +87,7 @@ class ModelWorker:
 
         self.device = device
         logger.info(f"Loading the model {self.model_name} on worker {worker_id} ...")
-        self.tokenizer, self.model, self.image_processor = \
-            load_pretrained_model(model_path, load_8bit, load_4bit, device=self.device, use_flash_attn=use_flash_attn)
+        self.tokenizer, self.model, self.image_processor = load_pretrained_model(model_path, load_8bit, load_4bit, device=self.device, use_flash_attn=use_flash_attn)
         self.is_multimodal = 'llava' in self.model_name.lower()
 
         if not no_register:
@@ -149,6 +148,7 @@ class ModelWorker:
         tokenizer, model, image_processor = self.tokenizer, self.model, self.image_processor
 
         prompt = params["prompt"]
+        
         ori_prompt = prompt
         images = params.get("images", None)
         num_image_tokens = 0
@@ -167,11 +167,11 @@ class ModelWorker:
                     images = images.to(self.model.device, dtype=torch.float16)
 
                 replace_token = DEFAULT_IMAGE_TOKEN
-                if getattr(self.model.config, 'mm_use_im_start_end', False):
-                    replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
+                # if getattr(self.model.config, 'mm_use_im_start_end', False):
+                #     replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
                 prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
-                num_image_tokens = prompt.count(replace_token) * model.get_vision_tower().num_patches
+                num_image_tokens = prompt.count(replace_token) * (model.num_patches_per_side.num_patches ** 2)
             else:
                 images = None
                 image_sizes = None

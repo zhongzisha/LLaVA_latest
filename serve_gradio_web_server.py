@@ -15,50 +15,6 @@ from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
 from dataclasses import dataclass, field
 from enum import auto, Enum
 
-class SeparatorStyle(Enum):
-    """Different separator style."""
-    SINGLE = auto()
-    TWO = auto()
-    PLAIN = auto()
-    LLAMA_3 = auto()
-    LLAMA_3_1 = auto()
-    GEMMA_2 = auto()
-    QWEN_2 = auto()
-
-class Conversation:
-    """A class that keeps all conversation history."""
-    system: str
-    roles: List[str]
-    messages: List[List[str]]
-    offset: int
-    sep_style: SeparatorStyle = SeparatorStyle.SINGLE
-    sep: str = "###"
-    sep2: str = None
-    version: str = "Unknown"
-    # Stop criteria (the default one is EOS token)
-    stop_str: Union[str, List[str]] = None
-    # Stops generation if meeting any token in this list
-    stop_token_ids: List[int] = None
-
-    def dict(self):
-        if len(self.get_images()) > 0:
-            return {
-                "system": self.system,
-                "roles": self.roles,
-                "messages": [[x, y[0] if type(y) is tuple else y] for x, y in self.messages],
-                "offset": self.offset,
-                "sep": self.sep,
-                "sep2": self.sep2,
-            }
-        return {
-            "system": self.system,
-            "roles": self.roles,
-            "messages": self.messages,
-            "offset": self.offset,
-            "sep": self.sep,
-            "sep2": self.sep2,
-        }
-
 
 logger = build_logger("gradio_web_server", "gradio_web_server.log")
 
