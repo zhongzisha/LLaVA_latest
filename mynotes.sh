@@ -102,6 +102,9 @@ rsync -avh --exclude "__pycache__" llava scripts $FRCE_SERVER:/scratch/cluster_s
 
 
 
+export PATH="/Library/Developer/CommandLineTools/usr/bin:$PATH"
+pip install unicorn --upgrade
+
 
 
 

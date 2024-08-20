@@ -2992,6 +2992,31 @@ def test_gemma2(cache_dir):
     print(outputs)
     print('=========== end test gemma2')
 
+
+def eval_mac():
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    cache_dir = '/Users/zhongz2/down/cache_dir'
+    conv_version = 'llama_3_1'
+    model_name_or_path = '/Users/zhongz2/down/finetune_llama_3_1_with_pretrain'
+    eot_str = "<|eot_id|>"
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
+    device = torch.device("cpu")
+    kwargs = {
+        "device_map": device,
+        "torch_dtype": torch.float16
+    }
+    model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
+    model.initialize_vision_modules(device=device, dtype=torch.float16)
+    model.to(device)
+    model.eval()
+    # from transformers.modeling_utils import load_sharded_checkpoint
+    load_sharded_checkpoint(model, model_name_or_path)
+
+    import pdb
+    pdb.set_trace()
+
+
 def eval():
     import sys
     if len(sys.argv) != 3:
@@ -3503,7 +3528,11 @@ def test_wds():
 
 
 if __name__ == '__main__':
-    # train_with_hf_trainer()
-    # train_with_deepspeed()
-    eval()
+    import socket
+    if socket.gethostname() == 'NCI-02218974-ML':
+        eval_mac()
+    else:
+        # train_with_hf_trainer()
+        # train_with_deepspeed()
+        eval()
     

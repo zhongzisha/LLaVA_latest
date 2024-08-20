@@ -23,7 +23,7 @@ from threading import Thread
 from transformers import AutoTokenizer, AutoConfig
 from transformers import TextIteratorStreamer
 
-from debug3 import DebugLlavaForCausalLM, load_sharded_checkpoint, tokenizer_image_token
+from debug3 import DebugLlavaForCausalLM, load_sharded_checkpoint, tokenizer_image_token, process_anyres_image
 from common import WORKER_HEART_BEAT_INTERVAL, build_logger, server_error_msg, pretty_print_semaphore, \
     IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
@@ -40,24 +40,21 @@ def load_image_from_base64(image):
 
 def load_pretrained_model(model_path, load_8bit, load_4bit, device=None, use_flash_attn=False):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
-    cache_dir = '/data/zhongz2/data/cache_dir'
-
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune'
-    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres/finetune2'
-    conv_version = 'llama_3'
-    model_name_or_path = f'/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune2_test2'
+    cache_dir = '/Users/zhongz2/down/cache_dir'
+    conv_version = 'llama_3_1'
+    model_name_or_path = '/Users/zhongz2/down/finetune_llama_3_1_with_pretrain'
     eot_str = "<|eot_id|>"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
-    device = torch.device("cuda:0") if device is None else device
+    device = torch.device("cpu") if device is None else device
     kwargs = {
-        "device_map": "cuda:0" if device is None else device,
+        "device_map": "cpu" if device is None else device,
         "torch_dtype": torch.float16
     }
     cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
-    if conv_version == 'llama_3':
-        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
+    if conv_version in ['llama_3', 'llama_3_1']:
+        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
     elif conv_version == 'gemma_2':
         model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
     elif conv_version == 'qwen_2':
@@ -83,7 +80,7 @@ class ModelWorker:
         self.controller_addr = controller_addr
         self.worker_addr = worker_addr
         self.worker_id = worker_id
-        self.model_name = 'llava_llama_3'
+        self.model_name = 'llava_llama_3_1'
 
         self.device = device
         logger.info(f"Loading the model {self.model_name} on worker {worker_id} ...")
@@ -159,7 +156,19 @@ class ModelWorker:
 
                 images = [load_image_from_base64(image) for image in images]
                 image_sizes = [image.size for image in images]
-                images = process_images(images, image_processor, model.config)
+                # images = process_images(images, image_processor, model.config)
+                images_new = []
+                for image in images:
+                    image_size = image.size
+                    max_size = max(image_size)
+                    if max_size > 1536:
+                        scale = 1024. / max_size
+                        image_size = (int(scale*image_size[0]), int(scale*image_size[1]))
+                        image = image.resize(image_size)
+                    
+                    image = process_anyres_image(image, image_processor, model.config.image_grid_pinpoints)
+                    images_new.append(image)
+                images = images_new
 
                 if type(images) is list:
                     images = [image.to(self.model.device, dtype=torch.float16) for image in images]
