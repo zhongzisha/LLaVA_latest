@@ -1,17 +1,17 @@
+import sys,os
 import argparse
 import torch
 
-from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from llava.conversation import conv_templates, SeparatorStyle
-from llava.model.builder import load_pretrained_model
-from llava.utils import disable_torch_init
-from llava.mm_utils import process_images, tokenizer_image_token, get_model_name_from_path
+from debug3 import DebugLlavaForCausalLM, load_sharded_checkpoint, tokenizer_image_token, process_anyres_image, SeparatorStyle, Conversation
+from common import WORKER_HEART_BEAT_INTERVAL, build_logger, server_error_msg, pretty_print_semaphore, \
+    IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
 
 from PIL import Image
 
 import requests
 from PIL import Image
 from io import BytesIO
+from transformers import AutoTokenizer, AutoConfig
 from transformers import TextStreamer
 
 
@@ -24,41 +24,71 @@ def load_image(image_file):
     return image
 
 
+def load_pretrained_model(gpu_id=-1):
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    cache_dir = './cache_dir'
+    conv_version = 'llama_3_1'
+    model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_llama_3_1_with_pretrain'
+    eot_str = "<|eot_id|>"
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+
+    print('gpu_id', gpu_id)
+    device = torch.device(f"cuda:{gpu_id}") if gpu_id>=0 else torch.device("cpu")
+    kwargs = {
+        "device_map": device,
+        "torch_dtype": torch.float16
+    }
+    cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
+    if conv_version in ['llama_3', 'llama_3_1']:
+        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
+    elif conv_version == 'gemma_2':
+        model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
+    elif conv_version == 'qwen_2':
+        model = DebugLlavaQwen2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
+    model.initialize_vision_modules(device=device, dtype=torch.float16)
+    load_sharded_checkpoint(model, model_name_or_path)
+    model.to(device)
+    model.eval()
+    return tokenizer, model, model.image_processor 
+    
+
+def disable_torch_init():
+    """
+    Disable the redundant torch default initialization to accelerate model creation.
+    """
+    import torch
+
+    setattr(torch.nn.Linear, "reset_parameters", lambda self: None)
+    setattr(torch.nn.LayerNorm, "reset_parameters", lambda self: None)
+
+
 def main(args):
     # Model
-    disable_torch_init()
+    # disable_torch_init()
+    context_len = 2048
+    tokenizer, model, image_processor = load_pretrained_model(gpu_id=args.gpu_id)
 
-    model_name = get_model_name_from_path(args.model_path)
-    tokenizer, model, image_processor, context_len = load_pretrained_model(args.model_path, args.model_base, model_name, args.load_8bit, args.load_4bit, device=args.device)
 
-    if "llama-2" in model_name.lower():
-        conv_mode = "llava_llama_2"
-    elif "mistral" in model_name.lower():
-        conv_mode = "mistral_instruct"
-    elif "v1.6-34b" in model_name.lower():
-        conv_mode = "chatml_direct"
-    elif "v1" in model_name.lower():
-        conv_mode = "llava_v1"
-    elif "mpt" in model_name.lower():
-        conv_mode = "mpt"
-    else:
-        conv_mode = "llava_v0"
-
-    if args.conv_mode is not None and conv_mode != args.conv_mode:
-        print('[WARNING] the auto inferred conversation mode is {}, while `--conv-mode` is {}, using {}'.format(conv_mode, args.conv_mode, args.conv_mode))
-    else:
-        args.conv_mode = conv_mode
-
-    conv = conv_templates[args.conv_mode].copy()
-    if "mpt" in model_name.lower():
-        roles = ('user', 'assistant')
-    else:
-        roles = conv.roles
+    conv = Conversation(
+        system="You are a pirate chatbot who always responds in pirate speak!",
+        roles=("user", "assistant"),
+        version="llama_3_1",
+        messages=[],
+        offset=0,
+        sep_style=SeparatorStyle.LLAMA_3_1,
+        stop_token_ids=[128009],
+        sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+        sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+    )
+    roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
+    messages = [{'role': 'system', 'content': conv.system}]
 
     image = load_image(args.image_file)
     image_size = image.size
-    # Similar operation in model_worker.py
-    image_tensor = process_images([image], image_processor, model.config)
+    # Similar operation in model_worker.py 
+    image_tensor = process_anyres_image(image, image_processor, model.config.image_grid_pinpoints)
+    print('image_tensor', image_tensor.shape)
     if type(image_tensor) is list:
         image_tensor = [image.to(model.device, dtype=torch.float16) for image in image_tensor]
     else:
@@ -66,26 +96,28 @@ def main(args):
 
     while True:
         try:
-            inp = input(f"{roles[0]}: ")
+            inp = input(f"{conv.roles[0]}: ")
         except EOFError:
             inp = ""
         if not inp:
             print("exit...")
             break
 
-        print(f"{roles[1]}: ", end="")
+        print(f"{conv.roles[1]}: ", end="")
 
         if image is not None:
             # first message
-            if model.config.mm_use_im_start_end:
-                inp = DEFAULT_IM_START_TOKEN + DEFAULT_IMAGE_TOKEN + DEFAULT_IM_END_TOKEN + '\n' + inp
-            else:
-                inp = DEFAULT_IMAGE_TOKEN + '\n' + inp
+            inp = DEFAULT_IMAGE_TOKEN + '\n' + inp
             image = None
         
-        conv.append_message(conv.roles[0], inp)
-        conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
+
+        messages.append({'role': conv.roles[0], 'content': inp})
+        
+        prompt = tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
 
         input_ids = tokenizer_image_token(prompt, tokenizer, IMAGE_TOKEN_INDEX, return_tensors='pt').unsqueeze(0).to(model.device)
         stop_str = conv.sep if conv.sep_style != SeparatorStyle.TWO else conv.sep2
@@ -100,11 +132,12 @@ def main(args):
                 do_sample=True if args.temperature > 0 else False,
                 temperature=args.temperature,
                 max_new_tokens=args.max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
                 streamer=streamer,
                 use_cache=True)
 
         outputs = tokenizer.decode(output_ids[0]).strip()
-        conv.messages[-1][-1] = outputs
+        messages.append({'role': conv.roles[1], 'content': outputs})
 
         if args.debug:
             print("\n", {"prompt": prompt, "outputs": outputs}, "\n")
@@ -112,15 +145,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model-path", type=str, default="facebook/opt-350m")
-    parser.add_argument("--model-base", type=str, default=None)
-    parser.add_argument("--image-file", type=str, required=True)
-    parser.add_argument("--device", type=str, default="cuda")
-    parser.add_argument("--conv-mode", type=str, default=None)
+    parser.add_argument("--image-file", type=str, default="./example.png")
     parser.add_argument("--temperature", type=float, default=0.2)
+    parser.add_argument("--gpu_id", type=int, default=-1)
     parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--load-8bit", action="store_true")
-    parser.add_argument("--load-4bit", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     main(args)
