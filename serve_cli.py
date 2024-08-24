@@ -26,9 +26,11 @@ def load_image(image_file):
 
 def load_pretrained_model(gpu_id=-1):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    cache_dir = '/Users/zhongz2/down/cache_dir'
+    model_name_or_path = '/Users/zhongz2/down/finetune_llama_3_1_with_pretrain'
     cache_dir = './cache_dir'
-    conv_version = 'llama_3_1'
     model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_llama_3_1_with_pretrain'
+    conv_version = 'llama_3_1'
     eot_str = "<|eot_id|>"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -41,7 +43,7 @@ def load_pretrained_model(gpu_id=-1):
     }
     cfg_pretrained = AutoConfig.from_pretrained(model_name_or_path)
     if conv_version in ['llama_3', 'llama_3_1']:
-        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="flash_attention_2", **kwargs)
+        model = DebugLlavaForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
     elif conv_version == 'gemma_2':
         model = DebugLlavaGemma2ForCausalLM.from_pretrained(model_name_or_path, config=cfg_pretrained, attn_implementation="eager", **kwargs)
     elif conv_version == 'qwen_2':

@@ -41,8 +41,10 @@ def load_image_from_base64(image):
 def load_pretrained_model(model_path, load_8bit, load_4bit, device=None, use_flash_attn=False):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     cache_dir = '/Users/zhongz2/down/cache_dir'
-    conv_version = 'llama_3_1'
     model_name_or_path = '/Users/zhongz2/down/finetune_llama_3_1_with_pretrain'
+    # cache_dir = './cache_dir'
+    # model_name_or_path = '/data/zhongz2/temp29/output_llava_llama_3/pretrain_anyres_debug3/finetune_llama_3_1_with_pretrain'
+    conv_version = 'llama_3_1'
     eot_str = "<|eot_id|>"
 
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
@@ -79,6 +81,8 @@ class ModelWorker:
                  model_path, load_8bit, load_4bit, device, use_flash_attn=False):
         self.controller_addr = controller_addr
         self.worker_addr = worker_addr
+        logger.info(f"controller_addr: {controller_addr}")
+        logger.info(f"worker_addr: {worker_addr}")
         self.worker_id = worker_id
         self.model_name = 'llava_llama_3_1'
 
@@ -103,6 +107,7 @@ class ModelWorker:
             "worker_status": self.get_status()
         }
         r = requests.post(url, json=data)
+        logger.info(f"register_to_controller status: {r.status_code}")
         assert r.status_code == 200
 
     def send_heart_beat(self):
@@ -144,7 +149,14 @@ class ModelWorker:
     def generate_stream(self, params):
         tokenizer, model, image_processor = self.tokenizer, self.model, self.image_processor
 
-        prompt = params["prompt"]
+        messages = params["prompt"]
+        prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        logger.info(f'prompt: {prompt}')
+
         
         ori_prompt = prompt
         images = params.get("images", None)
@@ -180,7 +192,7 @@ class ModelWorker:
                 #     replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
                 prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
-                num_image_tokens = prompt.count(replace_token) * (model.num_patches_per_side.num_patches ** 2)
+                num_image_tokens = prompt.count(replace_token) * (model.num_patches_per_side ** 2)
             else:
                 images = None
                 image_sizes = None
@@ -219,7 +231,7 @@ class ModelWorker:
         ))
         thread.start()
 
-        generated_text = ori_prompt
+        generated_text = '' # ori_prompt
         for new_text in streamer:
             generated_text += new_text
             if generated_text.endswith(stop_str):
@@ -290,7 +302,7 @@ if __name__ == "__main__":
     parser.add_argument("--worker-address", type=str, default="http://localhost:21002")
     parser.add_argument("--controller-address", type=str, default="http://localhost:21001")
     parser.add_argument("--model-path", type=str, default="facebook/opt-350m")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default="mps")
     parser.add_argument("--multi-modal", action="store_true", help="Multimodal mode is automatically detected with model name, please make sure `llava` is included in the model path.")
     parser.add_argument("--limit-model-concurrency", type=int, default=5)
     parser.add_argument("--stream-interval", type=int, default=1)

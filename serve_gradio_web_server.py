@@ -3,18 +3,243 @@ import datetime
 import json
 import os
 import time
-
+from enum import auto, Enum
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
+from io import BytesIO
 import gradio as gr
 import requests
+from PIL import Image
+import base64
 
-from llava.conversation import (default_conversation, conv_templates, SeparatorStyle)
-from common import (LOGDIR, build_logger, server_error_msg, violates_moderation, moderation_msg)
+from common import LOGDIR
+from common import (build_logger, server_error_msg, violates_moderation, moderation_msg)
 import hashlib
 
-from typing import List, Optional, Tuple, Union, Any, Dict, Sequence
-from dataclasses import dataclass, field
-from enum import auto, Enum
 
+class SeparatorStyle(Enum):
+    """Different separator style."""
+    SINGLE = auto()
+    TWO = auto()
+    PLAIN = auto()
+    LLAMA_3 = auto()
+    LLAMA_3_1 = auto()
+    GEMMA_2 = auto()
+    QWEN_2 = auto()
+    MPT = auto()
+
+
+@dataclass
+class Conversation:
+    """A class that keeps all conversation history."""
+    system: str
+    roles: List[str]
+    messages: List[List[str]]
+    offset: int
+    sep_style: SeparatorStyle = SeparatorStyle.SINGLE
+    sep: str = "###"
+    sep2: str = None
+    version: str = "Unknown"
+    # Stop criteria (the default one is EOS token)
+    stop_str: Union[str, List[str]] = None
+    # Stops generation if meeting any token in this list
+    stop_token_ids: List[int] = None
+
+    def get_prompt(self):
+        messages = self.messages
+        if len(messages) > 0 and type(messages[0][1]) is tuple:
+            messages = self.messages.copy()
+            init_role, init_msg = messages[0].copy()
+            init_msg = init_msg[0]
+            if "mmtag" in self.version:
+                init_msg = init_msg.replace("<image>", "").strip()
+                messages[0] = (init_role, init_msg)
+                messages.insert(0, (self.roles[0], "<Image><image></Image>"))
+                messages.insert(1, (self.roles[1], "Received."))
+            elif not init_msg.startswith("<image>"):
+                init_msg = init_msg.replace("<image>", "").strip()
+                messages[0] = (init_role, "<image>\n" + init_msg)
+            else:
+                messages[0] = (init_role, init_msg)
+
+        if self.sep_style == SeparatorStyle.SINGLE:
+            ret = self.system + self.sep
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, _, _ = message
+                    ret += role + ": " + message + self.sep
+                else:
+                    ret += role + ":"
+
+        elif self.sep_style == SeparatorStyle.TWO:
+            seps = [self.sep, self.sep2]
+            ret = self.system + seps[0]
+            for i, (role, message) in enumerate(messages):
+                if message:
+                    if type(message) is tuple:
+                        message, _, _ = message
+                    ret += role + ": " + message + seps[i % 2]
+                else:
+                    ret += role + ":"
+
+        elif self.sep_style == SeparatorStyle.LLAMA_3_1:
+            chat_template_messages = [{"role": "system", "content": self.system}]
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, images = message
+                        message = "<image>" * len(images) + message
+                    chat_template_messages.append({"role": role, "content": message})
+            ret = chat_template_messages
+            # # ret = chat_template_messages 
+            # ret = "<|begin_of_text|>"
+            # if self.system:
+            #     ret += self.system
+            # else:
+            #     ret += ""
+            # for i, (role, message) in enumerate(messages):
+            #     if message and type(message) is tuple:
+            #         message, images = message
+            #         message = "<image>" * len(images) + message
+            #         ret += f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+            #         ret += f"{message.strip()}<|eot_id|>"
+            #     else:
+            #         ret += f"<|start_header_id|>{role}<|end_header_id|>\n\n"
+    
+        elif self.sep_style == SeparatorStyle.MPT:
+            ret = self.system + self.sep
+            for role, message in messages:
+                if message:
+                    if type(message) is tuple:
+                        message, _, _ = message
+                    ret += role + message + self.sep
+                else:
+                    ret += role
+        else:
+            raise ValueError(f"Invalid style: {self.sep_style}")
+
+        return ret
+
+    def append_message(self, role, message):
+        self.messages.append([role, message])
+
+    def process_image(self, image, image_process_mode, return_pil=False, image_format="PNG"):
+        if image_process_mode == "Pad":
+
+            def expand2square(pil_img, background_color=(122, 116, 104)):
+                width, height = pil_img.size
+                if width == height:
+                    return pil_img
+                elif width > height:
+                    result = Image.new(pil_img.mode, (width, width), background_color)
+                    result.paste(pil_img, (0, (width - height) // 2))
+                    return result
+                else:
+                    result = Image.new(pil_img.mode, (height, height), background_color)
+                    result.paste(pil_img, ((height - width) // 2, 0))
+                    return result
+
+            image = expand2square(image)
+        elif image_process_mode in ["Default", "Crop"]:
+            pass
+        elif image_process_mode == "Resize":
+            image = image.resize((336, 336))
+        else:
+            raise ValueError(f"Invalid image_process_mode: {image_process_mode}")
+
+        max_hw, min_hw = max(image.size), min(image.size)
+        aspect_ratio = max_hw / min_hw
+        max_len, min_len = 672, 448
+        shortest_edge = int(min(max_len / aspect_ratio, min_len, min_hw))
+        longest_edge = int(shortest_edge * aspect_ratio)
+        W, H = image.size
+        if H > W:
+            H, W = longest_edge, shortest_edge
+        else:
+            H, W = shortest_edge, longest_edge
+        image = image.resize((W, H))
+        if return_pil:
+            return image
+        else:
+            buffered = BytesIO()
+            image.save(buffered, format=image_format)
+            img_b64_str = base64.b64encode(buffered.getvalue()).decode()
+            return img_b64_str
+
+    def get_images(self, return_pil=False):
+        images = []
+        for i, (role, msg) in enumerate(self.messages[self.offset :]):
+            if i % 2 == 0:
+                if type(msg) is tuple:
+                    msg, image, image_process_mode = msg
+                    if type(image) != list:
+                        image = [image]
+                    for img in image:
+                        img = self.process_image(img, image_process_mode, return_pil=return_pil)
+                        images.append(img)
+        return images
+
+    def to_gradio_chatbot(self):
+        ret = []
+        for i, (role, msg) in enumerate(self.messages[self.offset :]):
+            if i % 2 == 0:
+                if type(msg) is tuple:
+                    msg, image, image_process_mode = msg
+                    if type(image) != list:
+                        image = [image]
+                    if len(image) == 1:
+                        msg = "<image>\n" + msg.replace("<image>", "").strip()
+                    else:
+                        msg = re.sub(r"(<image>)\n(?=<image>)", r"\1 ", msg)
+                    for img in image:
+                        img_b64_str = self.process_image(img, "Default", return_pil=False, image_format="JPEG")
+                        img_str = f'<img src="data:image/jpeg;base64,{img_b64_str}"/>'
+                        msg = msg.replace("<image>", img_str, 1).strip()
+                    if len(msg) > 0:
+                        ret.append([msg, None])
+                else:
+                    ret.append([msg, None])
+            else:
+                ret[-1][-1] = msg
+        return ret
+
+    def copy(self):
+        return Conversation(system=self.system, roles=self.roles, messages=[[x, y] for x, y in self.messages], offset=self.offset, sep_style=self.sep_style, sep=self.sep, sep2=self.sep2, version=self.version)
+
+    def dict(self):
+        if len(self.get_images()) > 0:
+            return {
+                "system": self.system,
+                "roles": self.roles,
+                "messages": [[x, y[0] if type(y) is tuple else y] for x, y in self.messages],
+                "offset": self.offset,
+                "sep": self.sep,
+                "sep2": self.sep2,
+            }
+        return {
+            "system": self.system,
+            "roles": self.roles,
+            "messages": self.messages,
+            "offset": self.offset,
+            "sep": self.sep,
+            "sep2": self.sep2,
+        }
+conv_llama_3_1 = Conversation(
+            system="You are a pirate chatbot who always responds in pirate speak!",
+            roles=("user", "assistant"),
+            version="llama_3_1",
+            messages=[],
+            offset=0,
+            sep_style=SeparatorStyle.LLAMA_3_1,
+            stop_token_ids=[128009],
+            sep='<|start_header_id|>assistant<|end_header_id|>\n\n',
+            sep2='<|start_header_id|>user<|end_header_id|>\n\n'
+        )
+conv_templates = {
+    'llama_3_1': conv_llama_3_1
+}
+default_conversation = conv_llama_3_1
 
 logger = build_logger("gradio_web_server", "gradio_web_server.log")
 
@@ -80,6 +305,36 @@ def load_demo_refresh_model_list(request: gr.Request):
     return state, dropdown_update
 
 
+def vote_last_response(state, vote_type, model_selector, request: gr.Request):
+    with open(get_conv_log_filename(), "a") as fout:
+        data = {
+            "tstamp": round(time.time(), 4),
+            "type": vote_type,
+            "model": model_selector,
+            "state": state.dict(),
+            "ip": request.client.host,
+        }
+        fout.write(json.dumps(data) + "\n")
+
+
+def upvote_last_response(state, model_selector, request: gr.Request):
+    logger.info(f"upvote. ip: {request.client.host}")
+    vote_last_response(state, "upvote", model_selector, request)
+    return ("",) + (disable_btn,) * 3
+
+
+def downvote_last_response(state, model_selector, request: gr.Request):
+    logger.info(f"downvote. ip: {request.client.host}")
+    vote_last_response(state, "downvote", model_selector, request)
+    return ("",) + (disable_btn,) * 3
+
+
+def flag_last_response(state, model_selector, request: gr.Request):
+    logger.info(f"flag. ip: {request.client.host}")
+    vote_last_response(state, "flag", model_selector, request)
+    return ("",) + (disable_btn,) * 3
+
+
 def regenerate(state, image_process_mode, request: gr.Request):
     logger.info(f"regenerate. ip: {request.client.host}")
     state.messages[-1][-1] = None
@@ -134,40 +389,7 @@ def http_bot(state, model_selector, temperature, top_p, max_new_tokens, request:
 
     if len(state.messages) == state.offset + 2:
         # First round of conversation
-        if "llava" in model_name.lower():
-            if 'llama-2' in model_name.lower():
-                template_name = "llava_llama_2"
-            elif "mistral" in model_name.lower() or "mixtral" in model_name.lower():
-                if 'orca' in model_name.lower():
-                    template_name = "mistral_orca"
-                elif 'hermes' in model_name.lower():
-                    template_name = "chatml_direct"
-                else:
-                    template_name = "mistral_instruct"
-            elif 'llava-v1.6-34b' in model_name.lower():
-                template_name = "chatml_direct"
-            elif "v1" in model_name.lower():
-                if 'mmtag' in model_name.lower():
-                    template_name = "v1_mmtag"
-                elif 'plain' in model_name.lower() and 'finetune' not in model_name.lower():
-                    template_name = "v1_mmtag"
-                else:
-                    template_name = "llava_v1"
-            elif "mpt" in model_name.lower():
-                template_name = "mpt"
-            else:
-                if 'mmtag' in model_name.lower():
-                    template_name = "v0_mmtag"
-                elif 'plain' in model_name.lower() and 'finetune' not in model_name.lower():
-                    template_name = "v0_mmtag"
-                else:
-                    template_name = "llava_v0"
-        elif "mpt" in model_name:
-            template_name = "mpt_text"
-        elif "llama-2" in model_name:
-            template_name = "llama_2"
-        else:
-            template_name = "vicuna_v1"
+        template_name = 'llama_3_1'
         new_state = conv_templates[template_name].copy()
         new_state.append_message(new_state.roles[0], state.messages[-2][1])
         new_state.append_message(new_state.roles[1], None)
@@ -218,12 +440,13 @@ def http_bot(state, model_selector, temperature, top_p, max_new_tokens, request:
     try:
         # Stream output
         response = requests.post(worker_addr + "/worker_generate_stream",
-            headers=headers, json=pload, stream=True, timeout=10)
+            headers=headers, json=pload, stream=True, timeout=2000)
         for chunk in response.iter_lines(decode_unicode=False, delimiter=b"\0"):
             if chunk:
                 data = json.loads(chunk.decode())
                 if data["error_code"] == 0:
-                    output = data["text"][len(prompt):].strip()
+                    # output = data["text"][len(prompt):].strip()
+                    output = data["text"]
                     state.messages[-1][-1] = output + "▌"
                     yield (state, state.to_gradio_chatbot()) + (disable_btn,) * 5
                 else:
@@ -332,9 +555,9 @@ def build_demo(embed_mode, cur_dir=None, concurrency_count=10):
                     with gr.Column(scale=1, min_width=50):
                         submit_btn = gr.Button(value="Send", variant="primary")
                 with gr.Row(elem_id="buttons") as button_row:
-                    # upvote_btn = gr.Button(value="👍  Upvote", interactive=False)
-                    # downvote_btn = gr.Button(value="👎  Downvote", interactive=False)
-                    # flag_btn = gr.Button(value="⚠️  Flag", interactive=False)
+                    upvote_btn = gr.Button(value="👍  Upvote", interactive=False)
+                    downvote_btn = gr.Button(value="👎  Downvote", interactive=False)
+                    flag_btn = gr.Button(value="⚠️  Flag", interactive=False)
                     #stop_btn = gr.Button(value="⏹️  Stop Generation", interactive=False)
                     regenerate_btn = gr.Button(value="🔄  Regenerate", interactive=False)
                     clear_btn = gr.Button(value="🗑️  Clear", interactive=False)
@@ -345,23 +568,22 @@ def build_demo(embed_mode, cur_dir=None, concurrency_count=10):
         url_params = gr.JSON(visible=False)
 
         # Register listeners
-        btn_list = [regenerate_btn, clear_btn]
-        # btn_list = [upvote_btn, downvote_btn, flag_btn, regenerate_btn, clear_btn]
-        # upvote_btn.click(
-        #     upvote_last_response,
-        #     [state, model_selector],
-        #     [textbox, upvote_btn, downvote_btn, flag_btn]
-        # )
-        # downvote_btn.click(
-        #     downvote_last_response,
-        #     [state, model_selector],
-        #     [textbox, upvote_btn, downvote_btn, flag_btn]
-        # )
-        # flag_btn.click(
-        #     flag_last_response,
-        #     [state, model_selector],
-        #     [textbox, upvote_btn, downvote_btn, flag_btn]
-        # )
+        btn_list = [upvote_btn, downvote_btn, flag_btn, regenerate_btn, clear_btn]
+        upvote_btn.click(
+            upvote_last_response,
+            [state, model_selector],
+            [textbox, upvote_btn, downvote_btn, flag_btn]
+        )
+        downvote_btn.click(
+            downvote_last_response,
+            [state, model_selector],
+            [textbox, upvote_btn, downvote_btn, flag_btn]
+        )
+        flag_btn.click(
+            flag_last_response,
+            [state, model_selector],
+            [textbox, upvote_btn, downvote_btn, flag_btn]
+        )
 
         regenerate_btn.click(
             regenerate,
@@ -430,7 +652,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int)
     parser.add_argument("--controller-url", type=str, default="http://localhost:21001")
     parser.add_argument("--concurrency-count", type=int, default=16)
-    parser.add_argument("--model-list-mode", type=str, default="once", choices=["once", "reload"])
+    parser.add_argument("--model-list-mode", type=str, default="once",
+        choices=["once", "reload"])
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--moderate", action="store_true")
     parser.add_argument("--embed", action="store_true")
