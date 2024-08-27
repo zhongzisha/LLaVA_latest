@@ -188,8 +188,6 @@ class ModelWorker:
                     images = images.to(self.model.device, dtype=torch.float16)
 
                 replace_token = DEFAULT_IMAGE_TOKEN
-                # if getattr(self.model.config, 'mm_use_im_start_end', False):
-                #     replace_token = DEFAULT_IM_START_TOKEN + replace_token + DEFAULT_IM_END_TOKEN
                 prompt = prompt.replace(DEFAULT_IMAGE_TOKEN, replace_token)
 
                 num_image_tokens = prompt.count(replace_token) * (model.num_patches_per_side ** 2)

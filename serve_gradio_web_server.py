@@ -45,6 +45,8 @@ class Conversation:
     # Stops generation if meeting any token in this list
     stop_token_ids: List[int] = None
 
+    skip_next: bool = False
+
     def get_prompt(self):
         messages = self.messages
         if len(messages) > 0 and type(messages[0][1]) is tuple:
